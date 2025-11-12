@@ -221,6 +221,9 @@ class FundingRateArbitrage(StrategyV2Base):
             if token not in self.active_funding_arbitrages:
                 funding_info_report = self.get_funding_info_by_token(token)
                 best_combination = self.get_most_profitable_combination(funding_info_report)
+                if best_combination is None:
+                    continue
+                
                 connector_1, connector_2, trade_side, expected_profitability = best_combination
                 if expected_profitability >= self.config.min_funding_rate_profitability:
                     current_profitability = self.get_current_profitability_after_fees(
