@@ -195,6 +195,18 @@ class FundingRateArbitrage(StrategyV2Base):
     def get_normalized_funding_rate_in_seconds(self, funding_info_report, connector_name):
         return funding_info_report[connector_name].rate / self.funding_payment_interval_map.get(connector_name, 60 * 60 * 8)
 
+    @staticmethod
+    def _format_time_to_funding(seconds: float) -> str:
+        """Format seconds to a human readable HH:MM:SS string, defaulting to MM:SS when below an hour."""
+        if seconds is None:
+            return "N/A"
+        seconds = max(0, int(seconds))
+        hours, remainder = divmod(seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
+
     def create_actions_proposal(self) -> List[CreateExecutorAction]:
         """
         In this method we are going to evaluate if a new set of positions has to be created for each of the tokens that
@@ -331,8 +343,8 @@ class FundingRateArbitrage(StrategyV2Base):
 
                 time_to_next_funding_info_c1 = funding_info_report[connector_1].next_funding_utc_timestamp - self.current_timestamp
                 time_to_next_funding_info_c2 = funding_info_report[connector_2].next_funding_utc_timestamp - self.current_timestamp
-                best_paths_info["Min to Funding 1"] = time_to_next_funding_info_c1 / 60
-                best_paths_info["Min to Funding 2"] = time_to_next_funding_info_c2 / 60
+                best_paths_info["Time to Funding 1"] = self._format_time_to_funding(time_to_next_funding_info_c1)
+                best_paths_info["Time to Funding 2"] = self._format_time_to_funding(time_to_next_funding_info_c2)
 
                 all_funding_info.append(token_info)
                 all_best_paths.append(best_paths_info)
