@@ -102,7 +102,6 @@ class FundingRateArbitrage(StrategyV2Base):
         super().__init__(connectors, config)
         self.config = config
         self.active_funding_arbitrages = {}
-        self.stopped_funding_arbitrages = {token: [] for token in self.config.tokens}
 
     def start(self, clock: Clock, timestamp: float) -> None:
         """
@@ -217,7 +216,7 @@ class FundingRateArbitrage(StrategyV2Base):
                     )
                     if self.config.trade_profitability_condition_to_enter:
                         if current_profitability < 0:
-                            self.logger().info(f"Best Combination: {connector_1} | {connector_2} | {trade_side}"
+                            self.logger().debug(f"Best Combination: {connector_1} | {connector_2} | {trade_side}"
                                                f"Funding rate profitability: {expected_profitability}"
                                                f"Trading profitability after fees: {current_profitability}"
                                                f"Trade profitability is negative, skipping...")
@@ -245,6 +244,7 @@ class FundingRateArbitrage(StrategyV2Base):
         If that PNL is greater than the profitability_to_take_profit
         """
         stop_executor_actions = []
+        tokens_to_remove = []
         for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
             executors = self.filter_executors(
                 executors=self.get_all_executors(),
@@ -261,12 +261,14 @@ class FundingRateArbitrage(StrategyV2Base):
             current_funding_condition = funding_rate_diff * self.funding_profitability_interval < self.config.funding_rate_diff_stop_loss
             if take_profit_condition:
                 self.logger().info("Take profit profitability reached, stopping executors")
-                self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
                 stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
+                tokens_to_remove.append(token)
             elif current_funding_condition:
                 self.logger().info("Funding rate difference reached for stop loss, stopping executors")
-                self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
                 stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
+                tokens_to_remove.append(token)
+        for token in tokens_to_remove:
+            self.active_funding_arbitrages.pop(token, None)
         return stop_executor_actions
 
     def did_complete_funding_payment(self, funding_payment_completed_event: FundingPaymentCompletedEvent):
