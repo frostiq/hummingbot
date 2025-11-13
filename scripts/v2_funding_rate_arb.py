@@ -1,5 +1,7 @@
 import os
+from datetime import datetime, timezone
 from decimal import Decimal
+from dataclasses import dataclass, field
 from typing import Dict, List, Set, cast
 
 import pandas as pd
@@ -76,6 +78,15 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
         return v
 
 
+@dataclass
+class FundingArbitrageState:
+    connector_1: str
+    connector_2: str
+    executors_ids: List[str]
+    side: TradeType
+    funding_payments: List[FundingPaymentCompletedEvent] = field(default_factory=list)
+
+
 class FundingRateArbitrage(StrategyV2Base):
     quote_markets_map = {
         "hyperliquid_perpetual": "USD",
@@ -102,7 +113,7 @@ class FundingRateArbitrage(StrategyV2Base):
     def __init__(self, connectors: Dict[str, ConnectorBase], config: FundingRateArbitrageConfig):
         super().__init__(connectors, config)
         self.config = config
-        self.active_funding_arbitrages = {}
+        self.active_funding_arbitrages: Dict[str, FundingArbitrageState] = {}
 
     def start(self, clock: Clock, timestamp: float) -> None:
         """
@@ -142,13 +153,13 @@ class FundingRateArbitrage(StrategyV2Base):
         connector_1_price = Decimal(self.market_data_provider.get_price_for_quote_volume(
             connector_name=connector_1,
             trading_pair=trading_pair_1,
-            quote_volume=self.config.position_size_quote,
+            quote_volume=float(self.config.position_size_quote),
             is_buy=side == TradeType.BUY,
         ).result_price)
         connector_2_price = Decimal(self.market_data_provider.get_price_for_quote_volume(
             connector_name=connector_2,
             trading_pair=trading_pair_2,
-            quote_volume=self.config.position_size_quote,
+            quote_volume=float(self.config.position_size_quote),
             is_buy=side != TradeType.BUY,
         ).result_price)
         estimated_fees_connector_1 = self.connectors[connector_1].get_fee(
@@ -208,6 +219,19 @@ class FundingRateArbitrage(StrategyV2Base):
             return f"{hours:02d}:{minutes:02d}:{secs:02d}"
         return f"{minutes:02d}:{secs:02d}"
 
+    @staticmethod
+    def _format_funding_payments(payments: List[FundingPaymentCompletedEvent]) -> str:
+        if not payments:
+            return "None"
+        total_amount = sum((payment.amount for payment in payments), Decimal("0"))
+        entries = []
+        for payment in payments:
+            payment_time = datetime.fromtimestamp(payment.timestamp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            entries.append(
+                f"{payment.amount:.5f} USDT @ time={payment_time} UTC"
+            )
+        return f"Total={total_amount:.5f} | " + " | ".join(entries)
+
     def create_actions_proposal(self) -> List[CreateExecutorAction]:
         """
         In this method we are going to evaluate if a new set of positions has to be created for each of the tokens that
@@ -232,23 +256,25 @@ class FundingRateArbitrage(StrategyV2Base):
                     )
                     if self.config.trade_profitability_condition_to_enter:
                         if current_profitability < 0:
-                            self.logger().debug(f"Best Combination: {connector_1} | {connector_2} | {trade_side}"
-                                               f"Funding rate profitability: {expected_profitability}"
-                                               f"Trading profitability after fees: {current_profitability}"
+                            self.logger().debug(f"Best Combination: {connector_1} | {connector_2} | {trade_side} "
+                                               f"Funding rate profitability: {expected_profitability:.5f} "
+                                               f"Trading profitability after fees: {current_profitability:.5f} "
                                                f"Trade profitability is negative, skipping...")
                             continue
-                    self.logger().info(f"Best Combination: {connector_1} | {connector_2} | {trade_side}"
-                                       f"Funding rate profitability: {expected_profitability}"
-                                       f"Trading profitability after fees: {current_profitability}"
-                                       f"Starting executors...")
-                    position_executor_config_1, position_executor_config_2 = self.get_position_executors_config(token, connector_1, connector_2, trade_side)
-                    self.active_funding_arbitrages[token] = {
-                        "connector_1": connector_1,
-                        "connector_2": connector_2,
-                        "executors_ids": [position_executor_config_1.id, position_executor_config_2.id],
-                        "side": trade_side,
-                        "funding_payments": [],
-                    }
+                    self.logger().info(
+                        f"Found best combination for {token}: {connector_1} | {connector_2} | {trade_side} "
+                        f"Funding rate profitability: {expected_profitability:.5f} "
+                        f"Trading profitability after fees: {current_profitability:.5f}"
+                    )
+                    position_executor_config_1, position_executor_config_2 = self.get_position_executors_config(
+                        token, connector_1, connector_2, trade_side
+                    )
+                    self.active_funding_arbitrages[token] = FundingArbitrageState(
+                        connector_1=connector_1,
+                        connector_2=connector_2,
+                        executors_ids=[position_executor_config_1.id, position_executor_config_2.id],
+                        side=trade_side,
+                    )
                     return [CreateExecutorAction(executor_config=position_executor_config_1),
                             CreateExecutorAction(executor_config=position_executor_config_2)]
         return create_actions
@@ -264,23 +290,37 @@ class FundingRateArbitrage(StrategyV2Base):
         for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
             executors = self.filter_executors(
                 executors=self.get_all_executors(),
-                filter_func=lambda x: x.id in funding_arbitrage_info["executors_ids"]
+                filter_func=lambda x: x.id in funding_arbitrage_info.executors_ids
             )
-            funding_payments_pnl = sum(funding_payment.amount for funding_payment in funding_arbitrage_info["funding_payments"])
+            funding_payments_pnl = sum(funding_payment.amount for funding_payment in funding_arbitrage_info.funding_payments)
             executors_pnl = sum(executor.net_pnl_quote for executor in executors)
             take_profit_condition = executors_pnl + funding_payments_pnl > self.config.profitability_to_take_profit * self.config.position_size_quote
             funding_info_report = self.get_funding_info_by_token(token)
-            if funding_arbitrage_info["side"] == TradeType.BUY:
-                funding_rate_diff = self.get_normalized_funding_rate_in_seconds(funding_info_report, funding_arbitrage_info["connector_2"]) - self.get_normalized_funding_rate_in_seconds(funding_info_report, funding_arbitrage_info["connector_1"])
+            if funding_arbitrage_info.side == TradeType.BUY:
+                funding_rate_diff = self.get_normalized_funding_rate_in_seconds(
+                    funding_info_report, funding_arbitrage_info.connector_2
+                ) - self.get_normalized_funding_rate_in_seconds(funding_info_report, funding_arbitrage_info.connector_1)
             else:
-                funding_rate_diff = self.get_normalized_funding_rate_in_seconds(funding_info_report, funding_arbitrage_info["connector_1"]) - self.get_normalized_funding_rate_in_seconds(funding_info_report, funding_arbitrage_info["connector_2"])
+                funding_rate_diff = self.get_normalized_funding_rate_in_seconds(
+                    funding_info_report, funding_arbitrage_info.connector_1
+                ) - self.get_normalized_funding_rate_in_seconds(funding_info_report, funding_arbitrage_info.connector_2)
             current_funding_condition = funding_rate_diff * self.funding_profitability_interval < self.config.funding_rate_diff_stop_loss
             if take_profit_condition:
-                self.logger().info("Take profit profitability reached, stopping executors")
+                formatted_payments = self._format_funding_payments(funding_arbitrage_info.funding_payments)
+                self.logger().info(
+                    f"Take profit reached for {token}: executors={funding_arbitrage_info.executors_ids} "
+                    f"net_pnl={executors_pnl:.5f} funding_pnl={funding_payments_pnl:.5f} "
+                    f"funding_payments={formatted_payments}"
+                )
                 stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
                 tokens_to_remove.append(token)
             elif current_funding_condition:
-                self.logger().info("Funding rate difference reached for stop loss, stopping executors")
+                formatted_payments = self._format_funding_payments(funding_arbitrage_info.funding_payments)
+                self.logger().info(
+                    f"Funding rate stop loss met for {token}: executors={funding_arbitrage_info.executors_ids} "
+                    f"net_pnl={executors_pnl:.5f} funding_pnl={funding_payments_pnl:.5f} "
+                    f"funding_payments={formatted_payments}"
+                )
                 stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
                 tokens_to_remove.append(token)
         for token in tokens_to_remove:
@@ -294,8 +334,7 @@ class FundingRateArbitrage(StrategyV2Base):
         """
         token = funding_payment_completed_event.trading_pair.split("-")[0]
         if token in self.active_funding_arbitrages:
-            time_amount_str = f"{funding_payment_completed_event.timestamp}: {funding_payment_completed_event.amount} USDT"
-            self.active_funding_arbitrages[token]["funding_payments"].append(time_amount_str)
+            self.active_funding_arbitrages[token].funding_payments.append(funding_payment_completed_event)
 
     def get_position_executors_config(self, token, connector_1, connector_2, trade_side):
         price = self.market_data_provider.get_price_by_type(
@@ -374,11 +413,21 @@ class FundingRateArbitrage(StrategyV2Base):
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_funding_info), table_format=table_format,))
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_best_paths), table_format=table_format,))
             for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
-                long_connector = funding_arbitrage_info["connector_1"] if funding_arbitrage_info["side"] == TradeType.BUY else funding_arbitrage_info["connector_2"]
-                short_connector = funding_arbitrage_info["connector_2"] if funding_arbitrage_info["side"] == TradeType.BUY else funding_arbitrage_info["connector_1"]
+                long_connector = (
+                    funding_arbitrage_info.connector_1
+                    if funding_arbitrage_info.side == TradeType.BUY
+                    else funding_arbitrage_info.connector_2
+                )
+                short_connector = (
+                    funding_arbitrage_info.connector_2
+                    if funding_arbitrage_info.side == TradeType.BUY
+                    else funding_arbitrage_info.connector_1
+                )
                 funding_rate_status.append(f"Token: {token}")
                 funding_rate_status.append(f"Long connector: {long_connector} | Short connector: {short_connector}")
-                funding_rate_status.append(f"Funding Payments Collected: {funding_arbitrage_info['funding_payments']}")
-                funding_rate_status.append(f"Executors: {funding_arbitrage_info['executors_ids']}")
+                funding_rate_status.append(
+                    f"Funding Payments Collected: {self._format_funding_payments(funding_arbitrage_info.funding_payments)}"
+                )
+                funding_rate_status.append(f"Executors: {funding_arbitrage_info.executors_ids}")
                 funding_rate_status.append("-" * 50 + "\n")
         return original_status + "\n".join(funding_rate_status)
