@@ -847,16 +847,15 @@ class BybitPerpetualDerivative(PerpetualDerivativePyBase):
 
         if not data:
             # An empty funding fee/payment is retrieved.
-            timestamp, funding_rate, payment = 0, Decimal("-1"), Decimal("-1")
+            timestamp, funding, payment = 0, Decimal("-1"), Decimal("-1")
         else:
             # TODO: Check how to handle - signs and filter by exchange_symbol
             last_data = data[0]
-            funding_rate: Decimal = Decimal(str(last_data["funding"]))
-            position_size: Decimal = Decimal(str(last_data["size"]))
-            payment: Decimal = funding_rate * position_size
+            funding: Decimal = Decimal(str(last_data["funding"]))
+            payment: Decimal = funding
             timestamp: int = int(last_data["transactionTime"]) / 1e3
 
-        return timestamp, funding_rate, payment
+        return timestamp, funding, payment
 
     @staticmethod
     def _format_ret_code_for_print(ret_code: Union[str, int]) -> str:
