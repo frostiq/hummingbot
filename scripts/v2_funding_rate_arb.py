@@ -1,10 +1,11 @@
 import os
 from decimal import Decimal
-from typing import Dict, List, Set
+from typing import Dict, List, Set, cast
 
 import pandas as pd
 from pydantic import Field, field_validator
 
+from hummingbot.client.config.config_data_types import ClientConfigEnum
 from hummingbot.client.ui.interface_utils import format_df_for_printout
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.core.clock import Clock
@@ -293,7 +294,8 @@ class FundingRateArbitrage(StrategyV2Base):
         """
         token = funding_payment_completed_event.trading_pair.split("-")[0]
         if token in self.active_funding_arbitrages:
-            self.active_funding_arbitrages[token]["funding_payments"].append(funding_payment_completed_event)
+            time_amount_str = f"{funding_payment_completed_event.timestamp}: {funding_payment_completed_event.amount} USDT"
+            self.active_funding_arbitrages[token]["funding_payments"].append(time_amount_str)
 
     def get_position_executors_config(self, token, connector_1, connector_2, trade_side):
         price = self.market_data_provider.get_price_by_type(
@@ -333,16 +335,30 @@ class FundingRateArbitrage(StrategyV2Base):
                 token_info = {"token": token}
                 best_paths_info = {"token": token}
                 funding_info_report = self.get_funding_info_by_token(token)
-                best_combination = self.get_most_profitable_combination(funding_info_report)
+
                 for connector_name, info in funding_info_report.items():
-                    token_info[f"{connector_name} Rate (%)"] = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_name) * self.funding_profitability_interval * 100
+                    normalized_rate = self.get_normalized_funding_rate_in_seconds(
+                        funding_info_report, connector_name
+                    ) * self.funding_profitability_interval
+                    token_info[f"{connector_name} Rate"] = f"{normalized_rate:.2%}"
+
+                best_combination = self.get_most_profitable_combination(funding_info_report)
+                if best_combination is None:
+                    continue
+                
                 connector_1, connector_2, side, funding_rate_diff = best_combination
                 profitability_after_fees = self.get_current_profitability_after_fees(token, connector_1, connector_2, side)
-                best_paths_info["Best Path"] = f"{connector_1}_{connector_2}"
-                best_paths_info["Best Rate Diff (%)"] = funding_rate_diff * 100
-                best_paths_info["Trade Profitability (%)"] = profitability_after_fees * 100
-                best_paths_info["Days Trade Prof"] = - profitability_after_fees / funding_rate_diff
-                best_paths_info["Days to TP"] = (self.config.profitability_to_take_profit - profitability_after_fees) / funding_rate_diff
+                best_paths_info["Best Path"] = f"{connector_1.replace('_perpetual', '')}_{connector_2.replace('_perpetual', '')}"
+                best_paths_info["Best Rate Diff"] = f"{funding_rate_diff:.2%}"
+                best_paths_info["Trade Profitability"] = f"{profitability_after_fees:.2%}"
+                if funding_rate_diff != 0:
+                    days_trade_prof = -profitability_after_fees / funding_rate_diff
+                    best_paths_info["Days Trade Prof"] = f"{days_trade_prof:.2f}"
+                    days_to_tp = (self.config.profitability_to_take_profit - profitability_after_fees) / funding_rate_diff
+                    best_paths_info["Days to TP"] = "already" if days_to_tp <= 0 else f"{days_to_tp:.2f}"
+                else:
+                    best_paths_info["Days Trade Prof"] = "N/A"
+                    best_paths_info["Days to TP"] = "N/A"
 
                 time_to_next_funding_info_c1 = funding_info_report[connector_1].next_funding_utc_timestamp - self.current_timestamp
                 time_to_next_funding_info_c2 = funding_info_report[connector_2].next_funding_utc_timestamp - self.current_timestamp
@@ -354,8 +370,9 @@ class FundingRateArbitrage(StrategyV2Base):
             funding_rate_status.append(f"\n\n\nMin Funding Rate Profitability: {self.config.min_funding_rate_profitability:.2%}")
             funding_rate_status.append(f"Profitability to Take Profit: {self.config.profitability_to_take_profit:.2%}\n")
             funding_rate_status.append("Funding Rate Info (Funding Profitability in Days): ")
-            funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_funding_info), table_format="psql",))
-            funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_best_paths), table_format="psql",))
+            table_format = cast(ClientConfigEnum, "psql")
+            funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_funding_info), table_format=table_format,))
+            funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_best_paths), table_format=table_format,))
             for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
                 long_connector = funding_arbitrage_info["connector_1"] if funding_arbitrage_info["side"] == TradeType.BUY else funding_arbitrage_info["connector_2"]
                 short_connector = funding_arbitrage_info["connector_2"] if funding_arbitrage_info["side"] == TradeType.BUY else funding_arbitrage_info["connector_1"]
