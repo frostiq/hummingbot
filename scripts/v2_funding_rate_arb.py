@@ -220,15 +220,36 @@ class FundingRateArbitrage(StrategyV2Base):
         return f"{minutes:02d}:{secs:02d}"
 
     @staticmethod
-    def _format_funding_payments(payments: List[FundingPaymentCompletedEvent]) -> str:
+    def _normalize_event_timestamp(timestamp: float) -> float:
+        if timestamp is None:
+            return None
+        normalized = float(timestamp)
+        if normalized > 1e12:  # assume microseconds
+            normalized /= 1_000_000
+        elif normalized > 1e11:  # assume milliseconds
+            normalized /= 1_000
+        return normalized
+
+    @classmethod
+    def _format_funding_payments(cls, payments: List[FundingPaymentCompletedEvent]) -> str:
         if not payments:
             return "None"
         total_amount = sum((payment.amount for payment in payments), Decimal("0"))
         entries = []
         for payment in payments:
-            payment_time = datetime.fromtimestamp(payment.timestamp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                normalized_timestamp = cls._normalize_event_timestamp(payment.timestamp)
+                if normalized_timestamp is None:
+                    payment_time = "N/A"
+                else:
+                    payment_time = datetime.fromtimestamp(normalized_timestamp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            except (ValueError, OSError, OverflowError, TypeError) as timestamp_error:
+                payment_time = f"invalid({payment.timestamp})"
+                cls.logger().debug(
+                    "Failed to normalize funding payment timestamp: %s", timestamp_error, exc_info=True
+                )
             entries.append(
-                f"{payment.amount:.5f} USDT @ time={payment_time} UTC"
+                f"{payment.amount:.5f} USDT @ rate={payment.funding_rate:.4%} time={payment_time} UTC"
             )
         return f"Total={total_amount:.5f} | " + " | ".join(entries)
 
@@ -312,8 +333,8 @@ class FundingRateArbitrage(StrategyV2Base):
                     f"net_pnl={executors_pnl:.5f} funding_pnl={funding_payments_pnl:.5f} "
                     f"funding_payments={formatted_payments}"
                 )
-                stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
-                tokens_to_remove.append(token)
+                # stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
+                # tokens_to_remove.append(token)
             elif current_funding_condition:
                 formatted_payments = self._format_funding_payments(funding_arbitrage_info.funding_payments)
                 self.logger().info(
@@ -332,9 +353,16 @@ class FundingRateArbitrage(StrategyV2Base):
         Based on the funding payment event received, check if one of the active arbitrages matches to add the event
         to the list.
         """
-        token = funding_payment_completed_event.trading_pair.split("-")[0]
-        if token in self.active_funding_arbitrages:
-            self.active_funding_arbitrages[token].funding_payments.append(funding_payment_completed_event)
+        try:
+            token = funding_payment_completed_event.trading_pair.split("-")[0]
+            self.logger().info(
+                f"Funding payment event received: token={token}, amount={funding_payment_completed_event.amount}, "
+                f"timestamp={funding_payment_completed_event.timestamp}"
+            )
+            if token in self.active_funding_arbitrages:
+                self.active_funding_arbitrages[token].funding_payments.append(funding_payment_completed_event)
+        except Exception as event_error:  # broad catch to prevent strategy crash on malformed events
+            self.logger().exception("Failed to handle funding payment event: %s", event_error)
 
     def get_position_executors_config(self, token, connector_1, connector_2, trade_side):
         price = self.market_data_provider.get_price_by_type(
