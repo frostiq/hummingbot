@@ -400,16 +400,16 @@ class FundingRateArbitrage(StrategyV2Base):
                     token, funding_info_report, funding_arbitrage_info.connector_1
                 ) - self.get_normalized_funding_rate_in_seconds(token, funding_info_report, funding_arbitrage_info.connector_2)
             current_funding_condition = funding_rate_diff * self.seconds_per_day < self.config.funding_rate_diff_stop_loss
-            if take_profit_condition:
-                formatted_payments = self._format_funding_payments(funding_arbitrage_info.funding_payments)
-                self.logger().info(
-                    f"Take profit reached for {token}: executors={funding_arbitrage_info.executors_ids} "
-                    f"net_pnl={executors_pnl:.5f} funding_pnl={funding_payments_pnl:.5f} "
-                    f"funding_payments={formatted_payments}"
-                )
+            # if take_profit_condition:
+                # formatted_payments = self._format_funding_payments(funding_arbitrage_info.funding_payments)
+                # self.logger().info(
+                #     f"Take profit reached for {token}: executors={funding_arbitrage_info.executors_ids} "
+                #     f"net_pnl={executors_pnl:.5f} funding_pnl={funding_payments_pnl:.5f} "
+                #     f"funding_payments={formatted_payments}"
+                # )
                 # stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
                 # tokens_to_remove.append(token)
-            elif current_funding_condition:
+            if current_funding_condition:
                 formatted_payments = self._format_funding_payments(funding_arbitrage_info.funding_payments)
                 self.logger().info(
                     f"Funding rate stop loss met for {token}: executors={funding_arbitrage_info.executors_ids} "
