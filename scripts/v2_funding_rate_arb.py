@@ -40,9 +40,14 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Enter the connectors separated by commas (e.g. hyperliquid_perpetual,binance_perpetual): ",
             "prompt_on_new": True}
     )
-    tokens: Set[str] = Field(
-        default="WIF,FET",
-        json_schema_extra={"prompt": lambda mi: "Enter the tokens separated by commas (e.g. WIF,FET): ", "prompt_on_new": True},
+    tokens_and_funding_intervals: Dict[str, int] = Field(
+        default="WIF@1,FET@8",
+        json_schema_extra={
+            "prompt": lambda mi: (
+                "Enter the tokens with their funding interval in hours separated by commas (e.g. WIF@1,FET@8): "
+            ),
+            "prompt_on_new": True,
+        },
     )
     position_size_quote: Decimal = Field(
         default=100,
@@ -70,11 +75,54 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt_on_new": True}
     )
 
-    @field_validator("connectors", "tokens", mode="before")
+    @field_validator("connectors", mode="before")
     @classmethod
-    def validate_sets(cls, v):
+    def validate_connectors(cls, v):
         if isinstance(v, str):
-            return set(v.split(","))
+            return {item.strip() for item in v.split(",") if item.strip()}
+        return v
+
+    @field_validator("tokens", mode="before")
+    @classmethod
+    def validate_tokens(cls, v):
+        if isinstance(v, str):
+            token_entries = {}
+            for entry in v.split(","):
+                cleaned_entry = entry.strip()
+                if not cleaned_entry:
+                    continue
+                if "@" not in cleaned_entry:
+                    raise ValueError(
+                        "Invalid token entry format. Use token@interval_in_hours (e.g. WIF@1)."
+                    )
+                token_symbol, interval_str = cleaned_entry.split("@", 1)
+                token_symbol = token_symbol.strip()
+                interval_str = interval_str.strip()
+                if not token_symbol or not interval_str:
+                    raise ValueError("Token symbol and interval must not be empty.")
+                try:
+                    interval_value_hours = int(interval_str)
+                except ValueError as exc:
+                    raise ValueError(f"Invalid funding interval (hours) for token {token_symbol}: {interval_str}") from exc
+                if interval_value_hours <= 0:
+                    raise ValueError(f"Funding interval (hours) must be positive for token {token_symbol}.")
+                token_entries[token_symbol] = interval_value_hours
+            return token_entries
+        if isinstance(v, dict):
+            validated_tokens: Dict[str, int] = {}
+            for token_symbol, interval_value in v.items():
+                if interval_value is None:
+                    raise ValueError(f"Funding interval must be provided for token {token_symbol}.")
+                try:
+                    normalized_interval_hours = int(interval_value)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Invalid funding interval (hours) for token {token_symbol}: {interval_value}"
+                    ) from exc
+                if normalized_interval_hours <= 0:
+                    raise ValueError(f"Funding interval (hours) must be positive for token {token_symbol}.")
+                validated_tokens[token_symbol] = normalized_interval_hours
+            return validated_tokens
         return v
 
 
@@ -92,11 +140,8 @@ class FundingRateArbitrage(StrategyV2Base):
         "hyperliquid_perpetual": "USD",
         "binance_perpetual": "USDT"
     }
-    funding_payment_interval_map = {
-        "binance_perpetual": 60 * 60 * 8,
-        "hyperliquid_perpetual": 60 * 60 * 1
-    }
-    funding_profitability_interval = 60 * 60 * 24
+    seconds_per_day = 60 * 60 * 24
+    default_funding_interval_hours = 8
 
     @classmethod
     def get_trading_pair_for_connector(cls, token, connector):
@@ -106,7 +151,7 @@ class FundingRateArbitrage(StrategyV2Base):
     def init_markets(cls, config: FundingRateArbitrageConfig):
         markets = {}
         for connector in config.connectors:
-            trading_pairs = {cls.get_trading_pair_for_connector(token, connector) for token in config.tokens}
+            trading_pairs = {cls.get_trading_pair_for_connector(token, connector) for token in config.tokens_and_funding_intervals.keys()}
             markets[connector] = trading_pairs
         cls.markets = markets
 
@@ -189,23 +234,48 @@ class FundingRateArbitrage(StrategyV2Base):
             estimated_trade_pnl_pct = (connector_1_price - connector_2_price) / connector_2_price
         return estimated_trade_pnl_pct - estimated_fees_connector_1 - estimated_fees_connector_2
 
-    def get_most_profitable_combination(self, funding_info_report: Dict):
+    def get_most_profitable_combination(self, token: str, funding_info_report: Dict):
         best_combination = None
         highest_profitability = 0
         for connector_1 in funding_info_report:
             for connector_2 in funding_info_report:
                 if connector_1 != connector_2:
-                    rate_connector_1 = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_1)
-                    rate_connector_2 = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_2)
-                    funding_rate_diff = abs(rate_connector_1 - rate_connector_2) * self.funding_profitability_interval
+                    rate_connector_1 = self.get_normalized_funding_rate_in_seconds(token, funding_info_report, connector_1)
+                    rate_connector_2 = self.get_normalized_funding_rate_in_seconds(token, funding_info_report, connector_2)
+                    funding_rate_diff = abs(rate_connector_1 - rate_connector_2) * self.seconds_per_day
                     if funding_rate_diff > highest_profitability:
                         trade_side = TradeType.BUY if rate_connector_1 < rate_connector_2 else TradeType.SELL
                         highest_profitability = funding_rate_diff
                         best_combination = (connector_1, connector_2, trade_side, funding_rate_diff)
         return best_combination
 
-    def get_normalized_funding_rate_in_seconds(self, funding_info_report, connector_name):
-        return funding_info_report[connector_name].rate / self.funding_payment_interval_map.get(connector_name, 60 * 60 * 8)
+    def get_normalized_funding_rate_in_seconds(self, token: str, funding_info_report, connector_name):
+        interval_hours = self.config.tokens_and_funding_intervals.get(token)
+        if interval_hours is None:
+            self.logger().warning(
+                "Funding interval missing for token %s. Falling back to default interval %s hours.",
+                token,
+                self.default_funding_interval_hours,
+            )
+            interval_hours = self.default_funding_interval_hours
+        try:
+            interval_hours = int(interval_hours)
+        except (TypeError, ValueError):
+            self.logger().warning(
+                "Funding interval not castable to int for token %s. Falling back to default interval %s hours.",
+                token,
+                self.default_funding_interval_hours,
+            )
+            interval_hours = self.default_funding_interval_hours
+        if interval_hours <= 0:
+            self.logger().warning(
+                "Funding interval invalid for token %s. Falling back to default interval %s hours.",
+                token,
+                self.default_funding_interval_hours,
+            )
+            interval_hours = self.default_funding_interval_hours
+        interval_seconds = interval_hours * 60 * 60
+        return funding_info_report[connector_name].rate / interval_seconds
 
     @staticmethod
     def _format_time_to_funding(seconds: float) -> str:
@@ -263,13 +333,13 @@ class FundingRateArbitrage(StrategyV2Base):
         and if one gets filled buy market the other one to improve the entry prices.
         """
         create_actions = []
-        for token in self.config.tokens:
+        for token in self.config.tokens_and_funding_intervals.keys():
             if token not in self.active_funding_arbitrages:
                 funding_info_report = self.get_funding_info_by_token(token)
-                best_combination = self.get_most_profitable_combination(funding_info_report)
+                best_combination = self.get_most_profitable_combination(token, funding_info_report)
                 if best_combination is None:
                     continue
-                
+
                 connector_1, connector_2, trade_side, expected_profitability = best_combination
                 if expected_profitability >= self.config.min_funding_rate_profitability:
                     current_profitability = self.get_current_profitability_after_fees(
@@ -277,10 +347,12 @@ class FundingRateArbitrage(StrategyV2Base):
                     )
                     if self.config.trade_profitability_condition_to_enter:
                         if current_profitability < 0:
-                            self.logger().debug(f"Best Combination: {connector_1} | {connector_2} | {trade_side} "
-                                               f"Funding rate profitability: {expected_profitability:.5f} "
-                                               f"Trading profitability after fees: {current_profitability:.5f} "
-                                               f"Trade profitability is negative, skipping...")
+                            self.logger().debug(
+                                f"Best Combination: {connector_1} | {connector_2} | {trade_side} "
+                                f"Funding rate profitability: {expected_profitability:.5f} "
+                                f"Trading profitability after fees: {current_profitability:.5f} "
+                                f"Trade profitability is negative, skipping..."
+                            )
                             continue
                     self.logger().info(
                         f"Found best combination for {token}: {connector_1} | {connector_2} | {trade_side} "
@@ -296,8 +368,10 @@ class FundingRateArbitrage(StrategyV2Base):
                         executors_ids=[position_executor_config_1.id, position_executor_config_2.id],
                         side=trade_side,
                     )
-                    return [CreateExecutorAction(executor_config=position_executor_config_1),
-                            CreateExecutorAction(executor_config=position_executor_config_2)]
+                    return [
+                        CreateExecutorAction(executor_config=position_executor_config_1),
+                        CreateExecutorAction(executor_config=position_executor_config_2),
+                    ]
         return create_actions
 
     def stop_actions_proposal(self) -> List[StopExecutorAction]:
@@ -319,13 +393,13 @@ class FundingRateArbitrage(StrategyV2Base):
             funding_info_report = self.get_funding_info_by_token(token)
             if funding_arbitrage_info.side == TradeType.BUY:
                 funding_rate_diff = self.get_normalized_funding_rate_in_seconds(
-                    funding_info_report, funding_arbitrage_info.connector_2
-                ) - self.get_normalized_funding_rate_in_seconds(funding_info_report, funding_arbitrage_info.connector_1)
+                    token, funding_info_report, funding_arbitrage_info.connector_2
+                ) - self.get_normalized_funding_rate_in_seconds(token, funding_info_report, funding_arbitrage_info.connector_1)
             else:
                 funding_rate_diff = self.get_normalized_funding_rate_in_seconds(
-                    funding_info_report, funding_arbitrage_info.connector_1
-                ) - self.get_normalized_funding_rate_in_seconds(funding_info_report, funding_arbitrage_info.connector_2)
-            current_funding_condition = funding_rate_diff * self.funding_profitability_interval < self.config.funding_rate_diff_stop_loss
+                    token, funding_info_report, funding_arbitrage_info.connector_1
+                ) - self.get_normalized_funding_rate_in_seconds(token, funding_info_report, funding_arbitrage_info.connector_2)
+            current_funding_condition = funding_rate_diff * self.seconds_per_day < self.config.funding_rate_diff_stop_loss
             if take_profit_condition:
                 formatted_payments = self._format_funding_payments(funding_arbitrage_info.funding_payments)
                 self.logger().info(
@@ -398,21 +472,21 @@ class FundingRateArbitrage(StrategyV2Base):
         if self.ready_to_trade:
             all_funding_info = []
             all_best_paths = []
-            for token in self.config.tokens:
-                token_info = {"token": token}
+            for token, token_interval_hours in self.config.tokens_and_funding_intervals.items():
+                token_info = {"token": token, "Funding Interval (h)": token_interval_hours}
                 best_paths_info = {"token": token}
                 funding_info_report = self.get_funding_info_by_token(token)
 
                 for connector_name, info in funding_info_report.items():
                     normalized_rate = self.get_normalized_funding_rate_in_seconds(
-                        funding_info_report, connector_name
-                    ) * self.funding_profitability_interval
+                        token, funding_info_report, connector_name
+                    ) * self.seconds_per_day
                     token_info[f"{connector_name} Rate"] = f"{normalized_rate:.2%}"
 
-                best_combination = self.get_most_profitable_combination(funding_info_report)
+                best_combination = self.get_most_profitable_combination(token, funding_info_report)
                 if best_combination is None:
                     continue
-                
+
                 connector_1, connector_2, side, funding_rate_diff = best_combination
                 profitability_after_fees = self.get_current_profitability_after_fees(token, connector_1, connector_2, side)
                 best_paths_info["Best Path"] = f"{connector_1.replace('_perpetual', '')}_{connector_2.replace('_perpetual', '')}"
