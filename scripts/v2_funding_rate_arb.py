@@ -82,9 +82,9 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             return {item.strip() for item in v.split(",") if item.strip()}
         return v
 
-    @field_validator("tokens", mode="before")
+    @field_validator("tokens_and_funding_intervals", mode="before")
     @classmethod
-    def validate_tokens(cls, v):
+    def validate_tokens_and_funding_intervals(cls, v):
         if isinstance(v, str):
             token_entries = {}
             for entry in v.split(","):
