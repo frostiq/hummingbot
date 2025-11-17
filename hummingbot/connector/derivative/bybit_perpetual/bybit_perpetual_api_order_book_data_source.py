@@ -58,6 +58,7 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         if not funding_info_response["result"]:
             self._connector.logger().warning(f"Failed to get funding info for {trading_pair}")
             raise ValueError(f"Failed to get funding info for {trading_pair}")
+        self._connector.logger().info(f"Funding info response: {funding_info_response}")
         general_info = funding_info_response["result"]["list"][0]
 
         funding_info = FundingInfo(
