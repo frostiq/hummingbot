@@ -51,7 +51,7 @@ jobs:
           tags: frostiq/hummingbot:latest
 
   build_release:
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
