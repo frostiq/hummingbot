@@ -123,6 +123,7 @@ class FundingRateArbitrage(StrategyV2Base):
         self.active_funding_arbitrages: Dict[str, FundingArbitrageState] = {}
         self._initial_funding_rates: Dict[Tuple[str, str], Decimal] = {}
         self._funding_rate_updates: Dict[Tuple[str, str], bool] = {}
+        self._funding_stop_condition_start: Dict[str, float] = {}
 
     def start(self, clock: Clock, timestamp: float) -> None:
         """
@@ -350,8 +351,15 @@ class FundingRateArbitrage(StrategyV2Base):
                     token, funding_info_report, funding_arbitrage_info.connector_1
                 ) - self.get_normalized_funding_rate_in_seconds(token, funding_info_report, funding_arbitrage_info.connector_2)
             current_funding_condition = funding_rate_diff * self.seconds_per_day < self.config.funding_rate_diff_stop_loss
-
             if current_funding_condition:
+                condition_start = self._funding_stop_condition_start.setdefault(token, self.current_timestamp)
+                condition_duration = self.current_timestamp - condition_start
+            else:
+                condition_duration = 0
+                if token in self._funding_stop_condition_start:
+                    self._funding_stop_condition_start.pop(token, None)
+
+            if current_funding_condition and condition_duration >= 300:
                 formatted_payments = self._format_funding_payments(funding_arbitrage_info.funding_payments)
                 self.logger().info(
                     f"Funding rate stop loss met for {token}: executors={funding_arbitrage_info.executors_ids} "
@@ -362,6 +370,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 tokens_to_remove.append(token)
         for token in tokens_to_remove:
             self.active_funding_arbitrages.pop(token, None)
+            self._funding_stop_condition_start.pop(token, None)
         return stop_executor_actions
 
     def did_complete_funding_payment(self, funding_payment_completed_event: FundingPaymentCompletedEvent):
