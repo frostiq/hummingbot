@@ -425,11 +425,10 @@ class FundingRateArbitrage(StrategyV2Base):
 
                 for connector_name, info in funding_info_report.items():
                     interval_hours = info.funding_interval_hours
-                    token_info[f"{connector_name} Interval (h)"] = f"{interval_hours}"
                     normalized_rate = self.get_normalized_funding_rate_in_seconds(
                         token, funding_info_report, connector_name
                     ) * self.seconds_per_day
-                    token_info[f"{connector_name} Rate"] = f"{normalized_rate:.2%}"
+                    token_info[f"{connector_name} Funding"] = f"{normalized_rate:.2%}, interval {interval_hours}h"
 
                 best_combination = self.get_most_profitable_combination(token, funding_info_report)
                 if best_combination is None:
