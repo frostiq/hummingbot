@@ -1,6 +1,5 @@
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, List, Set, Tuple, cast
 
@@ -264,17 +263,6 @@ class FundingRateArbitrage(StrategyV2Base):
             return f"{hours:02d}:{minutes:02d}:{secs:02d}"
         return f"{minutes:02d}:{secs:02d}"
 
-    @staticmethod
-    def _normalize_event_timestamp(timestamp: float) -> float:
-        if timestamp is None:
-            return None
-        normalized = float(timestamp)
-        if normalized > 1e12:  # assume microseconds
-            normalized /= 1_000_000
-        elif normalized > 1e11:  # assume milliseconds
-            normalized /= 1_000
-        return normalized
-
     @classmethod
     def _format_funding_payments(cls, payments: List[FundingPaymentCompletedEvent]) -> str:
         if not payments:
@@ -282,19 +270,8 @@ class FundingRateArbitrage(StrategyV2Base):
         total_amount = sum((payment.amount for payment in payments), Decimal("0"))
         entries = []
         for payment in payments:
-            try:
-                normalized_timestamp = cls._normalize_event_timestamp(payment.timestamp)
-                if normalized_timestamp is None:
-                    payment_time = "N/A"
-                else:
-                    payment_time = datetime.fromtimestamp(normalized_timestamp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-            except (ValueError, OSError, OverflowError, TypeError) as timestamp_error:
-                payment_time = f"invalid({payment.timestamp})"
-                cls.logger().debug(
-                    "Failed to normalize funding payment timestamp: %s", timestamp_error, exc_info=True
-                )
             entries.append(
-                f"{payment.amount:.5f} USDT @ rate={payment.funding_rate:.4%} time={payment_time} UTC"
+                f"{payment.amount:.5f} USDT @ rate={payment.funding_rate:.4%} exchange={payment.market}"
             )
         return f"Total={total_amount:.5f} | " + " | ".join(entries)
 
