@@ -41,7 +41,6 @@ jobs:
           tags: frostiq/hummingbot:development
 
       - name: Build and push Latest Image
-        if: github.base_ref == 'master'
         uses: docker/build-push-action@v5
         with:
           context: .
