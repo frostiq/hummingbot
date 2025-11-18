@@ -238,6 +238,7 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             message_queue.put_nowait(trade_message)
 
     async def _parse_funding_info_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
+        self.logger().debug(f"Raw funding info message received: {raw_message}")
         event_type = raw_message["type"]
         if event_type == "delta":
             symbol = raw_message["topic"].split(".")[-1]
