@@ -842,6 +842,7 @@ class BybitPerpetualDerivative(PerpetualDerivativePyBase):
             path_url=CONSTANTS.GET_LAST_FUNDING_RATE_PATH_URL,
             params=params,
             is_auth_required=True,
+            trading_pair=trading_pair
         )
         data: Dict[str, Any] = raw_response["result"]["list"]
 
