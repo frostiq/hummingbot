@@ -13,7 +13,7 @@ on:
 
 jobs:
   build_pr:
-    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true
+    if:  github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' && github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -51,7 +51,7 @@ jobs:
           tags: frostiq/hummingbot:latest
 
   build_release:
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -79,4 +79,4 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: hummingbot/hummingbot:${{ steps.get_tag.outputs.VERSION }}
+          tags: frostiq/hummingbot:${{ steps.get_tag.outputs.VERSION }}
