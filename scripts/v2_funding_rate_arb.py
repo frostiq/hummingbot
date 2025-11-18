@@ -40,11 +40,11 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Enter the connectors separated by commas (e.g. hyperliquid_perpetual,binance_perpetual): ",
             "prompt_on_new": True}
     )
-    tokens_and_funding_intervals: Dict[str, int] = Field(
-        default="WIF@1,FET@8",
+    tokens: Set[str] = Field(
+        default_factory=lambda: {"WIF", "FET"},
         json_schema_extra={
             "prompt": lambda mi: (
-                "Enter the tokens with their funding interval in hours separated by commas (e.g. WIF@1,FET@8): "
+                "Enter the tokens separated by commas (e.g. WIF,FET): "
             ),
             "prompt_on_new": True,
         },
@@ -82,47 +82,11 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             return {item.strip() for item in v.split(",") if item.strip()}
         return v
 
-    @field_validator("tokens_and_funding_intervals", mode="before")
+    @field_validator("tokens", mode="before")
     @classmethod
-    def validate_tokens_and_funding_intervals(cls, v):
+    def validate_tokens(cls, v):
         if isinstance(v, str):
-            token_entries = {}
-            for entry in v.split(","):
-                cleaned_entry = entry.strip()
-                if not cleaned_entry:
-                    continue
-                if "@" not in cleaned_entry:
-                    raise ValueError(
-                        "Invalid token entry format. Use token@interval_in_hours (e.g. WIF@1)."
-                    )
-                token_symbol, interval_str = cleaned_entry.split("@", 1)
-                token_symbol = token_symbol.strip()
-                interval_str = interval_str.strip()
-                if not token_symbol or not interval_str:
-                    raise ValueError("Token symbol and interval must not be empty.")
-                try:
-                    interval_value_hours = int(interval_str)
-                except ValueError as exc:
-                    raise ValueError(f"Invalid funding interval (hours) for token {token_symbol}: {interval_str}") from exc
-                if interval_value_hours <= 0:
-                    raise ValueError(f"Funding interval (hours) must be positive for token {token_symbol}.")
-                token_entries[token_symbol] = interval_value_hours
-            return token_entries
-        if isinstance(v, dict):
-            validated_tokens: Dict[str, int] = {}
-            for token_symbol, interval_value in v.items():
-                if interval_value is None:
-                    raise ValueError(f"Funding interval must be provided for token {token_symbol}.")
-                try:
-                    normalized_interval_hours = int(interval_value)
-                except ValueError as exc:
-                    raise ValueError(
-                        f"Invalid funding interval (hours) for token {token_symbol}: {interval_value}"
-                    ) from exc
-                if normalized_interval_hours <= 0:
-                    raise ValueError(f"Funding interval (hours) must be positive for token {token_symbol}.")
-                validated_tokens[token_symbol] = normalized_interval_hours
-            return validated_tokens
+            return {item.strip() for item in v.split(",") if item.strip()}
         return v
 
 
@@ -151,7 +115,7 @@ class FundingRateArbitrage(StrategyV2Base):
     def init_markets(cls, config: FundingRateArbitrageConfig):
         markets = {}
         for connector in config.connectors:
-            trading_pairs = {cls.get_trading_pair_for_connector(token, connector) for token in config.tokens_and_funding_intervals.keys()}
+            trading_pairs = {cls.get_trading_pair_for_connector(token, connector) for token in config.tokens}
             markets[connector] = trading_pairs
         cls.markets = markets
 
@@ -263,11 +227,13 @@ class FundingRateArbitrage(StrategyV2Base):
         return best_combination
 
     def get_normalized_funding_rate_in_seconds(self, token: str, funding_info_report, connector_name):
-        interval_hours = self.config.tokens_and_funding_intervals.get(token)
+        funding_info = funding_info_report[connector_name]
+        interval_hours = funding_info.funding_interval_hours
         if interval_hours is None:
             self.logger().warning(
-                "Funding interval missing for token %s. Falling back to default interval %s hours.",
+                "Funding interval missing in connector data for token %s on %s. Falling back to default interval %s hours.",
                 token,
+                connector_name,
                 self.default_funding_interval_hours,
             )
             interval_hours = self.default_funding_interval_hours
@@ -275,20 +241,22 @@ class FundingRateArbitrage(StrategyV2Base):
             interval_hours = int(interval_hours)
         except (TypeError, ValueError):
             self.logger().warning(
-                "Funding interval not castable to int for token %s. Falling back to default interval %s hours.",
+                "Funding interval not castable to int for token %s on %s. Falling back to default interval %s hours.",
                 token,
+                connector_name,
                 self.default_funding_interval_hours,
             )
             interval_hours = self.default_funding_interval_hours
         if interval_hours <= 0:
             self.logger().warning(
-                "Funding interval invalid for token %s. Falling back to default interval %s hours.",
+                "Funding interval invalid for token %s on %s. Falling back to default interval %s hours.",
                 token,
+                connector_name,
                 self.default_funding_interval_hours,
             )
             interval_hours = self.default_funding_interval_hours
         interval_seconds = interval_hours * 60 * 60
-        return funding_info_report[connector_name].rate / interval_seconds
+        return funding_info.rate / interval_seconds
 
     @staticmethod
     def _format_time_to_funding(seconds: float) -> str:
@@ -346,7 +314,7 @@ class FundingRateArbitrage(StrategyV2Base):
         and if one gets filled buy market the other one to improve the entry prices.
         """
         create_actions = []
-        for token in self.config.tokens_and_funding_intervals.keys():
+        for token in self.config.tokens:
             if token not in self.active_funding_arbitrages:
                 funding_info_report = self.get_funding_info_by_token(token)
                 best_combination = self.get_most_profitable_combination(token, funding_info_report)
@@ -476,10 +444,18 @@ class FundingRateArbitrage(StrategyV2Base):
         if self.ready_to_trade:
             all_funding_info = []
             all_best_paths = []
-            for token, token_interval_hours in self.config.tokens_and_funding_intervals.items():
-                token_info = {"token": token, "Funding Interval (h)": token_interval_hours}
+            for token in self.config.tokens:
                 best_paths_info = {"token": token}
                 funding_info_report = self.get_funding_info_by_token(token)
+                if not funding_info_report:
+                    continue
+
+                representative_interval = next(
+                    (info.funding_interval_hours for info in funding_info_report.values() if info.funding_interval_hours is not None),
+                    None,
+                )
+
+                token_info = {"token": token, "Funding Interval (h)": representative_interval}
 
                 for connector_name, info in funding_info_report.items():
                     normalized_rate = self.get_normalized_funding_rate_in_seconds(
