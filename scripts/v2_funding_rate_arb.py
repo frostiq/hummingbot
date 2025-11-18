@@ -350,21 +350,25 @@ class FundingRateArbitrage(StrategyV2Base):
                 funding_rate_diff = self.get_normalized_funding_rate_in_seconds(
                     token, funding_info_report, funding_arbitrage_info.connector_1
                 ) - self.get_normalized_funding_rate_in_seconds(token, funding_info_report, funding_arbitrage_info.connector_2)
-            current_funding_condition = funding_rate_diff * self.seconds_per_day < self.config.funding_rate_diff_stop_loss
-            if current_funding_condition:
+            below_threshold = funding_rate_diff * self.seconds_per_day < self.config.funding_rate_diff_stop_loss
+            if below_threshold:
                 condition_start = self._funding_stop_condition_start.setdefault(token, self.current_timestamp)
                 condition_duration = self.current_timestamp - condition_start
+                if (condition_duration == 0):
+                    self.logger().info(
+                        f"Funding rate stop loss condition for {token} started: duration={condition_duration:.2f}s "
+                        f"funding_rate_diff={funding_rate_diff:.5f}"
+                    )
             else:
                 condition_duration = 0
                 if token in self._funding_stop_condition_start:
                     self._funding_stop_condition_start.pop(token, None)
 
-            if current_funding_condition and condition_duration >= 300:
-                formatted_payments = self._format_funding_payments(funding_arbitrage_info.funding_payments)
+            if below_threshold and condition_duration >= 30 * 60:
                 self.logger().info(
                     f"Funding rate stop loss met for {token}: executors={funding_arbitrage_info.executors_ids} "
+                    f"funding_rate_diff={funding_rate_diff:.5f} for {condition_duration}s"
                     f"net_pnl={executors_pnl:.5f} funding_pnl={funding_payments_pnl:.5f} "
-                    f"funding_payments={formatted_payments}"
                 )
                 stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
                 tokens_to_remove.append(token)
