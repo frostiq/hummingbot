@@ -1,6 +1,7 @@
 name: Client Docker Buildx Workflow
 
 on:
+  workflow_dispatch:
   pull_request:
     types: [closed]
     branches:
@@ -8,6 +9,7 @@ on:
       - development
   release:
     types: [published, edited]
+
 
 jobs:
   build_pr:
