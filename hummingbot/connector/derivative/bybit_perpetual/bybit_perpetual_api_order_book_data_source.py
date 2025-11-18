@@ -180,6 +180,7 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                 await websocket_assistant.send(ping_request)
 
     def _channel_originating_message(self, event_message: Dict[str, Any]) -> str:
+        self.logger().info(f"Event message received: {event_message}")
         channel = ""
         if "success" not in event_message:
             event_channel = event_message["topic"]
