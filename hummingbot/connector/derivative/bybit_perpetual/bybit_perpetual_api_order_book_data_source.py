@@ -58,7 +58,6 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         if not funding_info_response["result"]:
             self._connector.logger().warning(f"Failed to get funding info for {trading_pair}")
             raise ValueError(f"Failed to get funding info for {trading_pair}")
-        self._connector.logger().info(f"Funding info response: {funding_info_response}")
         general_info = funding_info_response["result"]["list"][0]
 
         interval_raw = general_info.get("fundingIntervalHour")
@@ -180,7 +179,6 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                 await websocket_assistant.send(ping_request)
 
     def _channel_originating_message(self, event_message: Dict[str, Any]) -> str:
-        self.logger().info(f"Event message received: {event_message}")
         channel = ""
         if "success" not in event_message:
             event_channel = event_message["topic"]
