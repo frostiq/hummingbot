@@ -140,25 +140,30 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                 await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
                 for trading_pair in trading_pairs
             ]
-            symbols_str = "|".join(symbols)
 
-            payload = {
-                "op": "subscribe",
-                "args": [f"{CONSTANTS.WS_TRADES_TOPIC}.{symbols_str}"],
-            }
-            subscribe_trade_request = WSJSONRequest(payload=payload)
+            trade_args = [f"{CONSTANTS.WS_TRADES_TOPIC}.{symbol}" for symbol in symbols]
+            subscribe_trade_request = WSJSONRequest(
+                payload={
+                    "op": "subscribe",
+                    "args": trade_args,
+                }
+            )
 
-            payload = {
-                "op": "subscribe",
-                "args": [f"{CONSTANTS.WS_ORDER_BOOK_EVENTS_TOPIC}.{symbols_str}"],
-            }
-            subscribe_orderbook_request = WSJSONRequest(payload=payload)
+            orderbook_args = [f"{CONSTANTS.WS_ORDER_BOOK_EVENTS_TOPIC}.{symbol}" for symbol in symbols]
+            subscribe_orderbook_request = WSJSONRequest(
+                payload={
+                    "op": "subscribe",
+                    "args": orderbook_args,
+                }
+            )
 
-            payload = {
-                "op": "subscribe",
-                "args": [f"{CONSTANTS.WS_INSTRUMENTS_INFO_TOPIC}.{symbols_str}"],
-            }
-            subscribe_instruments_request = WSJSONRequest(payload=payload)
+            instrument_args = [f"{CONSTANTS.WS_INSTRUMENTS_INFO_TOPIC}.{symbol}" for symbol in symbols]
+            subscribe_instruments_request = WSJSONRequest(
+                payload={
+                    "op": "subscribe",
+                    "args": instrument_args,
+                }
+            )
 
             self.logger().info(f"subscribe_instruments_request payload: {subscribe_instruments_request.payload}")
 
