@@ -830,10 +830,11 @@ class BybitPerpetualDerivative(PerpetualDerivativePyBase):
         return success, msg
 
     async def _fetch_last_fee_payment(self, trading_pair: str) -> Tuple[int, Decimal, Decimal]:
-        # exchange_symbol = await self.exchange_symbol_associated_to_pair(trading_pair)
+        base_coin = trading_pair.split("-")[0]
 
         params = {
             "type": "SETTLEMENT",
+            "baseCoin": base_coin,
         }
         if bybit_utils.is_linear_perpetual(trading_pair):
             params["category"] = "linear"
@@ -841,21 +842,19 @@ class BybitPerpetualDerivative(PerpetualDerivativePyBase):
             path_url=CONSTANTS.GET_LAST_FUNDING_RATE_PATH_URL,
             params=params,
             is_auth_required=True,
-            trading_pair=trading_pair
         )
         data: Dict[str, Any] = raw_response["result"]["list"]
 
         if not data:
             # An empty funding fee/payment is retrieved.
-            timestamp, funding, payment = 0, Decimal("-1"), Decimal("-1")
+            timestamp, funding_rate, payment = 0, Decimal("-1"), Decimal("-1")
         else:
-            # TODO: Check how to handle - signs and filter by exchange_symbol
             last_data = data[0]
-            funding: Decimal = Decimal(str(last_data["funding"]))
-            payment: Decimal = funding
+            funding_rate: Decimal = Decimal(str(last_data["feeRate"]))
+            payment: Decimal = Decimal(str(last_data["funding"]))
             timestamp: int = int(last_data["transactionTime"]) / 1e3
 
-        return timestamp, funding, payment
+        return timestamp, funding_rate, payment
 
     @staticmethod
     def _format_ret_code_for_print(ret_code: Union[str, int]) -> str:
