@@ -3,7 +3,7 @@ import json
 import re
 from decimal import Decimal
 from test.isolated_asyncio_wrapper_test_case import IsolatedAsyncioWrapperTestCase
-from typing import Any, Dict, List, cast
+from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from aioresponses.core import aioresponses
@@ -384,10 +384,9 @@ class BinancePerpetualAPIOrderBookDataSourceUnitTests(IsolatedAsyncioWrapperTest
         mock_api.get(regex_url, exception=asyncio.CancelledError)
 
         msg_queue: asyncio.Queue = asyncio.Queue()
-        ev_loop = cast(asyncio.BaseEventLoop, self.local_event_loop)
 
         with self.assertRaises(asyncio.CancelledError):
-            await self.data_source.listen_for_order_book_snapshots(ev_loop, msg_queue)
+            await self.data_source.listen_for_order_book_snapshots(self.local_event_loop, msg_queue)
 
         self.assertEqual(0, msg_queue.qsize())
 
@@ -404,9 +403,8 @@ class BinancePerpetualAPIOrderBookDataSourceUnitTests(IsolatedAsyncioWrapperTest
 
         msg_queue: asyncio.Queue = asyncio.Queue()
 
-        ev_loop = cast(asyncio.BaseEventLoop, self.local_event_loop)
         self.listening_task = self.local_event_loop.create_task(
-            self.data_source.listen_for_order_book_snapshots(ev_loop, msg_queue)
+            self.data_source.listen_for_order_book_snapshots(self.local_event_loop, msg_queue)
         )
 
         await self.resume_test_event.wait()
@@ -430,9 +428,8 @@ class BinancePerpetualAPIOrderBookDataSourceUnitTests(IsolatedAsyncioWrapperTest
         mock_api.get(regex_url, body=json.dumps(mock_response))
 
         msg_queue: asyncio.Queue = asyncio.Queue()
-        ev_loop = cast(asyncio.BaseEventLoop, self.local_event_loop)
         self.listening_task = self.local_event_loop.create_task(
-            self.data_source.listen_for_order_book_snapshots(ev_loop, msg_queue)
+            self.data_source.listen_for_order_book_snapshots(self.local_event_loop, msg_queue)
         )
 
         result = await msg_queue.get()
@@ -446,9 +443,7 @@ class BinancePerpetualAPIOrderBookDataSourceUnitTests(IsolatedAsyncioWrapperTest
     async def test_listen_for_funding_info_cancelled_error_raised(self):
         mock_queue = AsyncMock()
         mock_queue.get.side_effect = asyncio.CancelledError
-        message_queue = cast(Dict[Any, asyncio.Queue], self.data_source._message_queue)
-        queue_mock = cast(asyncio.Queue, mock_queue)
-        message_queue[CONSTANTS.FUNDING_INFO_STREAM_ID] = queue_mock
+        self.data_source._message_queue[CONSTANTS.FUNDING_INFO_STREAM_ID] = mock_queue
 
         with self.assertRaises(asyncio.CancelledError):
             await self.data_source.listen_for_funding_info(mock_queue)
