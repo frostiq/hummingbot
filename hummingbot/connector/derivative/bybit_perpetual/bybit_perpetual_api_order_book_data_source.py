@@ -190,8 +190,8 @@ class BybitPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             elif event_channel == CONSTANTS.WS_INSTRUMENTS_INFO_TOPIC:
                 channel = self._funding_info_messages_queue_key
         else:
-            if event_message["success"] is False:
-                self.logger().error(f"Error message received from Bybit WebSocket: {event_message}")
+            # if event_message["success"] is False:
+            self.logger().error(f"Error message received from Bybit WebSocket: {event_message}")
         return channel
 
     async def _parse_order_book_diff_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
