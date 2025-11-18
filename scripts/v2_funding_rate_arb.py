@@ -104,7 +104,6 @@ class FundingRateArbitrage(StrategyV2Base):
         "binance_perpetual": "USDT"
     }
     seconds_per_day = 60 * 60 * 24
-    default_funding_interval_hours = 8
 
     @classmethod
     def get_trading_pair_for_connector(cls, token, connector):
@@ -428,7 +427,7 @@ class FundingRateArbitrage(StrategyV2Base):
                     normalized_rate = self.get_normalized_funding_rate_in_seconds(
                         token, funding_info_report, connector_name
                     ) * self.seconds_per_day
-                    token_info[f"{connector_name} Funding"] = f"{normalized_rate:.2%} ({info.rate:.2%} each {interval_hours}h)"
+                    token_info[f"{connector_name} Funding"] = f"{normalized_rate:.2%} ({info.rate:.4%} each {interval_hours}h)"
 
                 best_combination = self.get_most_profitable_combination(token, funding_info_report)
                 if best_combination is None:
@@ -436,7 +435,15 @@ class FundingRateArbitrage(StrategyV2Base):
 
                 connector_1, connector_2, side, funding_rate_diff = best_combination
                 profitability_after_fees = self.get_current_profitability_after_fees(token, connector_1, connector_2, side)
-                best_paths_info["Best Path"] = f"{connector_1.replace('_perpetual', '')}_{connector_2.replace('_perpetual', '')}"
+                connector_1_label = connector_1.replace("_perpetual", "")
+                connector_2_label = connector_2.replace("_perpetual", "")
+                if side == TradeType.BUY:
+                    connector_1_arrow, connector_2_arrow = "↑", "↓"
+                else:
+                    connector_1_arrow, connector_2_arrow = "↓", "↑"
+                best_paths_info["Best Path"] = (
+                    f"{connector_1_label} {connector_1_arrow} | {connector_2_label} {connector_2_arrow}"
+                )
                 best_paths_info["Best Rate Diff"] = f"{funding_rate_diff:.2%}"
                 best_paths_info["Trade Profitability"] = f"{profitability_after_fees:.2%}"
                 if funding_rate_diff != 0:
