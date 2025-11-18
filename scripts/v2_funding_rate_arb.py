@@ -1,8 +1,8 @@
 import os
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
-from dataclasses import dataclass, field
-from typing import Dict, List, Set, cast
+from typing import Dict, List, Set, Tuple, cast
 
 import pandas as pd
 from pydantic import Field, field_validator
@@ -159,6 +159,8 @@ class FundingRateArbitrage(StrategyV2Base):
         super().__init__(connectors, config)
         self.config = config
         self.active_funding_arbitrages: Dict[str, FundingArbitrageState] = {}
+        self._initial_funding_rates: Dict[Tuple[str, str], Decimal] = {}
+        self._funding_rate_updates: Dict[Tuple[str, str], bool] = {}
 
     def start(self, clock: Clock, timestamp: float) -> None:
         """
@@ -184,8 +186,19 @@ class FundingRateArbitrage(StrategyV2Base):
         funding_rates = {}
         for connector_name, connector in self.connectors.items():
             trading_pair = self.get_trading_pair_for_connector(token, connector_name)
-            funding_rates[connector_name] = connector.get_funding_info(trading_pair)
+            funding_info = connector.get_funding_info(trading_pair)
+            self._track_funding_rate_update(token, connector_name, funding_info.rate)
+            funding_rates[connector_name] = funding_info
         return funding_rates
+
+    def _track_funding_rate_update(self, token: str, connector_name: str, current_rate: Decimal):
+        key = (token, connector_name)
+        tracked_rate = self._initial_funding_rates.get(key)
+        if tracked_rate is None:
+            self._initial_funding_rates[key] = current_rate
+            self._funding_rate_updates.setdefault(key, False)
+        elif not self._funding_rate_updates.get(key, False) and current_rate != tracked_rate:
+            self._funding_rate_updates[key] = True
 
     def get_current_profitability_after_fees(self, token: str, connector_1: str, connector_2: str, side: TradeType):
         """
@@ -389,7 +402,6 @@ class FundingRateArbitrage(StrategyV2Base):
             )
             funding_payments_pnl = sum(funding_payment.amount for funding_payment in funding_arbitrage_info.funding_payments)
             executors_pnl = sum(executor.net_pnl_quote for executor in executors)
-            take_profit_condition = executors_pnl + funding_payments_pnl > self.config.profitability_to_take_profit * self.config.position_size_quote
             funding_info_report = self.get_funding_info_by_token(token)
             if funding_arbitrage_info.side == TradeType.BUY:
                 funding_rate_diff = self.get_normalized_funding_rate_in_seconds(
@@ -400,15 +412,7 @@ class FundingRateArbitrage(StrategyV2Base):
                     token, funding_info_report, funding_arbitrage_info.connector_1
                 ) - self.get_normalized_funding_rate_in_seconds(token, funding_info_report, funding_arbitrage_info.connector_2)
             current_funding_condition = funding_rate_diff * self.seconds_per_day < self.config.funding_rate_diff_stop_loss
-            # if take_profit_condition:
-                # formatted_payments = self._format_funding_payments(funding_arbitrage_info.funding_payments)
-                # self.logger().info(
-                #     f"Take profit reached for {token}: executors={funding_arbitrage_info.executors_ids} "
-                #     f"net_pnl={executors_pnl:.5f} funding_pnl={funding_payments_pnl:.5f} "
-                #     f"funding_payments={formatted_payments}"
-                # )
-                # stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
-                # tokens_to_remove.append(token)
+
             if current_funding_condition:
                 formatted_payments = self._format_funding_payments(funding_arbitrage_info.funding_payments)
                 self.logger().info(
@@ -514,6 +518,15 @@ class FundingRateArbitrage(StrategyV2Base):
             table_format = cast(ClientConfigEnum, "psql")
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_funding_info), table_format=table_format,))
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_best_paths), table_format=table_format,))
+            stale_combinations = [
+                f"{token}@{connector}"
+                for (token, connector), was_updated in self._funding_rate_updates.items()
+                if not was_updated
+            ]
+            if stale_combinations:
+                funding_rate_status.append(
+                    "WARNING: Funding rate never updated after initialization for: " + ", ".join(sorted(stale_combinations))
+                )
             for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
                 long_connector = (
                     funding_arbitrage_info.connector_1
