@@ -151,6 +151,26 @@ class FundingRateArbitrage(StrategyV2Base):
         for connector_name, connector in self.connectors.items():
             trading_pair = self.get_trading_pair_for_connector(token, connector_name)
             funding_info = connector.get_funding_info(trading_pair)
+            if funding_info is None:
+                raise ValueError(
+                    f"Funding info missing for token {token} on {connector_name}."
+                )
+            interval_raw = funding_info.funding_interval_hours
+            if interval_raw is None:
+                raise ValueError(
+                    f"Funding interval missing for token {token} on {connector_name}."
+                )
+            try:
+                interval_hours = int(interval_raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Funding interval not castable to int for token {token} on {connector_name}: {interval_raw}"
+                ) from exc
+            if interval_hours <= 0:
+                raise ValueError(
+                    f"Funding interval must be positive for token {token} on {connector_name}: {interval_hours}"
+                )
+            funding_info.funding_interval_hours = interval_hours
             self._track_funding_rate_update(token, connector_name, funding_info.rate)
             funding_rates[connector_name] = funding_info
         return funding_rates
@@ -229,32 +249,6 @@ class FundingRateArbitrage(StrategyV2Base):
     def get_normalized_funding_rate_in_seconds(self, token: str, funding_info_report, connector_name):
         funding_info = funding_info_report[connector_name]
         interval_hours = funding_info.funding_interval_hours
-        if interval_hours is None:
-            self.logger().warning(
-                "Funding interval missing in connector data for token %s on %s. Falling back to default interval %s hours.",
-                token,
-                connector_name,
-                self.default_funding_interval_hours,
-            )
-            interval_hours = self.default_funding_interval_hours
-        try:
-            interval_hours = int(interval_hours)
-        except (TypeError, ValueError):
-            self.logger().warning(
-                "Funding interval not castable to int for token %s on %s. Falling back to default interval %s hours.",
-                token,
-                connector_name,
-                self.default_funding_interval_hours,
-            )
-            interval_hours = self.default_funding_interval_hours
-        if interval_hours <= 0:
-            self.logger().warning(
-                "Funding interval invalid for token %s on %s. Falling back to default interval %s hours.",
-                token,
-                connector_name,
-                self.default_funding_interval_hours,
-            )
-            interval_hours = self.default_funding_interval_hours
         interval_seconds = interval_hours * 60 * 60
         return funding_info.rate / interval_seconds
 
@@ -450,14 +444,11 @@ class FundingRateArbitrage(StrategyV2Base):
                 if not funding_info_report:
                     continue
 
-                representative_interval = next(
-                    (info.funding_interval_hours for info in funding_info_report.values() if info.funding_interval_hours is not None),
-                    None,
-                )
-
-                token_info = {"token": token, "Funding Interval (h)": representative_interval}
+                token_info = {"token": token}
 
                 for connector_name, info in funding_info_report.items():
+                    interval_hours = info.funding_interval_hours
+                    token_info[f"{connector_name} Interval (h)"] = f"{interval_hours}"
                     normalized_rate = self.get_normalized_funding_rate_in_seconds(
                         token, funding_info_report, connector_name
                     ) * self.seconds_per_day
