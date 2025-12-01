@@ -1,7 +1,7 @@
 import os
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Dict, List, Set, Tuple, cast
+from typing import Dict, List, Optional, Set, Tuple, cast
 
 import pandas as pd
 from pydantic import Field, field_validator
@@ -39,11 +39,21 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Enter the connectors separated by commas (e.g. hyperliquid_perpetual,binance_perpetual): ",
             "prompt_on_new": True}
     )
-    tokens: Set[str] = Field(
-        default_factory=lambda: {"WIF", "FET"},
+    token_directions: Dict[str, Dict[str, TradeType]] = Field(
+        default_factory=lambda: {
+            "WIF": {
+                "hyperliquid_perpetual": TradeType.BUY,
+                "binance_perpetual": TradeType.SELL,
+            },
+            "FET": {
+                "hyperliquid_perpetual": TradeType.BUY,
+                "binance_perpetual": TradeType.SELL,
+            },
+        },
         json_schema_extra={
             "prompt": lambda mi: (
-                "Enter the tokens separated by commas (e.g. WIF,FET): "
+                "Enter token directions as token->connector->direction mappings (e.g."
+                " WIF.hyperliquid_perpetual=long,WIF.binance_perpetual=short)"
             ),
             "prompt_on_new": True,
         },
@@ -81,12 +91,50 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             return {item.strip() for item in v.split(",") if item.strip()}
         return v
 
-    @field_validator("tokens", mode="before")
+    @field_validator("token_directions", mode="before")
     @classmethod
-    def validate_tokens(cls, v):
-        if isinstance(v, str):
-            return {item.strip() for item in v.split(",") if item.strip()}
-        return v
+    def validate_token_directions(cls, value):
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            normalized: Dict[str, Dict[str, TradeType]] = {}
+            for token, connector_map in value.items():
+                if not isinstance(connector_map, dict):
+                    raise ValueError(
+                        "token_directions entries must map each token to a connector:direction dictionary"
+                    )
+                normalized[token] = {}
+                for connector, direction in connector_map.items():
+                    normalized[token][connector] = cls._normalize_direction(direction)
+            return normalized
+        raise ValueError("token_directions must be a mapping of token to connector directions")
+
+    @staticmethod
+    def _normalize_direction(direction) -> TradeType:
+        if isinstance(direction, TradeType):
+            return direction
+        if isinstance(direction, str):
+            direction_value = direction.strip().lower()
+            if direction_value in {"long", "buy"}:
+                return TradeType.BUY
+            if direction_value in {"short", "sell"}:
+                return TradeType.SELL
+        raise ValueError(f"Unsupported direction value: {direction}")
+
+    @property
+    def token_symbols(self) -> Set[str]:
+        if not self.token_directions:
+            raise ValueError("token_directions must define at least one token with connector directions.")
+        return set(self.token_directions.keys())
+
+    def connectors_for_token(self, token: str) -> Set[str]:
+        direction_map = self.token_directions.get(token)
+        if direction_map:
+            return set(direction_map.keys())
+        raise ValueError(f"No connector directions configured for token {token}.")
+
+    def connector_direction(self, token: str, connector: str) -> Optional[TradeType]:
+        return self.token_directions.get(token, {}).get(connector)
 
 
 @dataclass
@@ -113,7 +161,7 @@ class FundingRateArbitrage(StrategyV2Base):
     def init_markets(cls, config: FundingRateArbitrageConfig):
         markets = {}
         for connector in config.connectors:
-            trading_pairs = {cls.get_trading_pair_for_connector(token, connector) for token in config.tokens}
+            trading_pairs = {cls.get_trading_pair_for_connector(token, connector) for token in config.token_symbols}
             markets[connector] = trading_pairs
         cls.markets = markets
 
@@ -146,8 +194,16 @@ class FundingRateArbitrage(StrategyV2Base):
         """
         This method provides the funding rates across all the connectors
         """
+        connector_rules = self.config.connectors_for_token(token)
+        if not connector_rules:
+            raise ValueError(f"No connector directions configured for token {token}.")
         funding_rates = {}
-        for connector_name, connector in self.connectors.items():
+        for connector_name in connector_rules:
+            connector = self.connectors.get(connector_name)
+            if connector is None:
+                raise ValueError(
+                    f"Connector {connector_name} configured for token {token} is not initialized in this strategy."
+                )
             trading_pair = self.get_trading_pair_for_connector(token, connector_name)
             funding_info = connector.get_funding_info(trading_pair)
             if funding_info is None:
@@ -182,6 +238,15 @@ class FundingRateArbitrage(StrategyV2Base):
             self._funding_rate_updates.setdefault(key, False)
         elif not self._funding_rate_updates.get(key, False) and current_rate != tracked_rate:
             self._funding_rate_updates[key] = True
+
+    def _desired_side_for_connector(self, token: str, connector_name: str) -> Optional[TradeType]:
+        return self.config.connector_direction(token, connector_name)
+
+    def _is_direction_allowed(self, token: str, connector_name: str, desired_side: TradeType) -> bool:
+        required_side = self._desired_side_for_connector(token, connector_name)
+        if required_side is None:
+            return True
+        return required_side == desired_side
 
     def get_current_profitability_after_fees(self, token: str, connector_1: str, connector_2: str, side: TradeType):
         """
@@ -241,6 +306,11 @@ class FundingRateArbitrage(StrategyV2Base):
                     funding_rate_diff = abs(rate_connector_1 - rate_connector_2) * self.seconds_per_day
                     if funding_rate_diff > highest_profitability:
                         trade_side = TradeType.BUY if rate_connector_1 < rate_connector_2 else TradeType.SELL
+                        opposite_side = TradeType.SELL if trade_side == TradeType.BUY else TradeType.BUY
+                        if not self._is_direction_allowed(token, connector_1, trade_side):
+                            continue
+                        if not self._is_direction_allowed(token, connector_2, opposite_side):
+                            continue
                         highest_profitability = funding_rate_diff
                         best_combination = (connector_1, connector_2, trade_side, funding_rate_diff)
         return best_combination
@@ -275,6 +345,13 @@ class FundingRateArbitrage(StrategyV2Base):
             )
         return f"Total={total_amount:.5f} | " + " | ".join(entries)
 
+    @classmethod
+    def _format_funding_payments_for_connector(
+        cls, payments: List[FundingPaymentCompletedEvent], connector_name: str
+    ) -> str:
+        connector_payments = [payment for payment in payments if payment.market == connector_name]
+        return cls._format_funding_payments(connector_payments)
+
     def create_actions_proposal(self) -> List[CreateExecutorAction]:
         """
         In this method we are going to evaluate if a new set of positions has to be created for each of the tokens that
@@ -285,7 +362,7 @@ class FundingRateArbitrage(StrategyV2Base):
         and if one gets filled buy market the other one to improve the entry prices.
         """
         create_actions = []
-        for token in self.config.tokens:
+        for token in self.config.token_symbols:
             if token not in self.active_funding_arbitrages:
                 funding_info_report = self.get_funding_info_by_token(token)
                 best_combination = self.get_most_profitable_combination(token, funding_info_report)
@@ -384,10 +461,7 @@ class FundingRateArbitrage(StrategyV2Base):
         """
         try:
             token = funding_payment_completed_event.trading_pair.split("-")[0]
-            self.logger().info(
-                f"Funding payment event received: token={token}, amount={funding_payment_completed_event.amount}, "
-                f"timestamp={funding_payment_completed_event.timestamp}"
-            )
+
             if token in self.active_funding_arbitrages:
                 self.active_funding_arbitrages[token].funding_payments.append(funding_payment_completed_event)
         except Exception as event_error:  # broad catch to prevent strategy crash on malformed events
@@ -427,7 +501,7 @@ class FundingRateArbitrage(StrategyV2Base):
         if self.ready_to_trade:
             all_funding_info = []
             all_best_paths = []
-            for token in self.config.tokens:
+            for token in self.config.token_symbols:
                 best_paths_info = {"token": token}
                 funding_info_report = self.get_funding_info_by_token(token)
                 if not funding_info_report:
@@ -440,7 +514,16 @@ class FundingRateArbitrage(StrategyV2Base):
                     normalized_rate = self.get_normalized_funding_rate_in_seconds(
                         token, funding_info_report, connector_name
                     ) * self.seconds_per_day
-                    token_info[f"{connector_name} Funding"] = f"{normalized_rate:.2%} ({info.rate:.4%} each {interval_hours}h)"
+                    direction_label = self._desired_side_for_connector(token, connector_name)
+                    if direction_label == TradeType.BUY:
+                        direction_text = "long"
+                    elif direction_label == TradeType.SELL:
+                        direction_text = "short"
+                    else:
+                        direction_text = "n/a"
+                    token_info[f"{connector_name} Funding"] = (
+                        f"{normalized_rate:.2%} ({info.rate:.4%} each {interval_hours}h, {direction_text})"
+                    )
 
                 best_combination = self.get_most_profitable_combination(token, funding_info_report)
                 if best_combination is None:
@@ -490,22 +573,40 @@ class FundingRateArbitrage(StrategyV2Base):
                 funding_rate_status.append(
                     "WARNING: Funding rate never updated after initialization for: " + ", ".join(sorted(stale_combinations))
                 )
-            for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
-                long_connector = (
-                    funding_arbitrage_info.connector_1
-                    if funding_arbitrage_info.side == TradeType.BUY
-                    else funding_arbitrage_info.connector_2
-                )
-                short_connector = (
-                    funding_arbitrage_info.connector_2
-                    if funding_arbitrage_info.side == TradeType.BUY
-                    else funding_arbitrage_info.connector_1
-                )
-                funding_rate_status.append(f"Token: {token}")
-                funding_rate_status.append(f"Long connector: {long_connector} | Short connector: {short_connector}")
+            if self.active_funding_arbitrages:
+                active_rows = []
+                for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
+                    long_connector = (
+                        funding_arbitrage_info.connector_1
+                        if funding_arbitrage_info.side == TradeType.BUY
+                        else funding_arbitrage_info.connector_2
+                    )
+                    short_connector = (
+                        funding_arbitrage_info.connector_2
+                        if funding_arbitrage_info.side == TradeType.BUY
+                        else funding_arbitrage_info.connector_1
+                    )
+                    long_funding = self._format_funding_payments_for_connector(
+                        funding_arbitrage_info.funding_payments, long_connector
+                    )
+                    short_funding = self._format_funding_payments_for_connector(
+                        funding_arbitrage_info.funding_payments, short_connector
+                    )
+                    active_rows.append(
+                        {
+                            "token": token,
+                            "long": long_connector,
+                            "long funding": long_funding,
+                            "short": short_connector,
+                            "short funding": short_funding,
+                            "executors": ", ".join(funding_arbitrage_info.executors_ids),
+                        }
+                    )
+                funding_rate_status.append("Active Funding Arbitrages:")
                 funding_rate_status.append(
-                    f"Funding Payments Collected: {self._format_funding_payments(funding_arbitrage_info.funding_payments)}"
+                    format_df_for_printout(
+                        df=pd.DataFrame(active_rows),
+                        table_format=table_format,
+                    )
                 )
-                funding_rate_status.append(f"Executors: {funding_arbitrage_info.executors_ids}")
-                funding_rate_status.append("-" * 50 + "\n")
         return original_status + "\n".join(funding_rate_status)
