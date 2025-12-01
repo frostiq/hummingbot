@@ -505,6 +505,8 @@ class FundingRateArbitrage(StrategyV2Base):
             all_funding_info = []
             all_best_paths = []
             for token in self.config.token_symbols:
+                funding_rate_status.append("\nToken Symbol: " + token)
+
                 best_paths_info = {"token": token}
                 funding_info_report = self.get_funding_info_by_token(token)
                 if not funding_info_report:
