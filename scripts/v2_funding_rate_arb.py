@@ -248,6 +248,21 @@ class FundingRateArbitrage(StrategyV2Base):
             return True
         return required_side == desired_side
 
+    def _token_direction_lines(self) -> List[str]:
+        lines = ["Configured Token Directions:"]
+        for token in sorted(self.config.token_directions.keys()):
+            direction_map = self.config.token_directions[token]
+            connector_entries = []
+            for connector_name, direction in sorted(direction_map.items()):
+                if isinstance(direction, TradeType):
+                    direction_label = direction.name.lower()
+                else:
+                    direction_label = str(direction).lower()
+                connector_entries.append(f"{connector_name} -> {direction_label}")
+            connectors_text = ", ".join(connector_entries) if connector_entries else "None"
+            lines.append(f"{token}: {connectors_text}")
+        return lines
+
     def get_current_profitability_after_fees(self, token: str, connector_1: str, connector_2: str, side: TradeType):
         """
         This methods compares the profitability of buying at market in the two exchanges. If the side is TradeType.BUY
@@ -295,9 +310,9 @@ class FundingRateArbitrage(StrategyV2Base):
             estimated_trade_pnl_pct = (connector_1_price - connector_2_price) / connector_2_price
         return estimated_trade_pnl_pct - estimated_fees_connector_1 - estimated_fees_connector_2
 
-    def get_most_profitable_combination(self, token: str, funding_info_report: Dict):
+    def _find_best_combination(self, token: str, funding_info_report: Dict, enforce_direction: bool):
         best_combination = None
-        highest_profitability = 0
+        highest_profitability = Decimal("0")
         for connector_1 in funding_info_report:
             for connector_2 in funding_info_report:
                 if connector_1 != connector_2:
@@ -307,13 +322,22 @@ class FundingRateArbitrage(StrategyV2Base):
                     if funding_rate_diff > highest_profitability:
                         trade_side = TradeType.BUY if rate_connector_1 < rate_connector_2 else TradeType.SELL
                         opposite_side = TradeType.SELL if trade_side == TradeType.BUY else TradeType.BUY
-                        if not self._is_direction_allowed(token, connector_1, trade_side):
-                            continue
-                        if not self._is_direction_allowed(token, connector_2, opposite_side):
-                            continue
+                        if enforce_direction:
+                            if not self._is_direction_allowed(token, connector_1, trade_side):
+                                continue
+                            if not self._is_direction_allowed(token, connector_2, opposite_side):
+                                continue
                         highest_profitability = funding_rate_diff
                         best_combination = (connector_1, connector_2, trade_side, funding_rate_diff)
         return best_combination
+
+    def get_most_profitable_combination(self, token: str, funding_info_report: Dict):
+        """Return the best funding combination without enforcing direction rules."""
+        return self._find_best_combination(token, funding_info_report, enforce_direction=False)
+
+    def get_directionally_allowed_combination(self, token: str, funding_info_report: Dict):
+        """Return the best funding combination that complies with configured directions."""
+        return self._find_best_combination(token, funding_info_report, enforce_direction=True)
 
     def get_normalized_funding_rate_in_seconds(self, token: str, funding_info_report, connector_name):
         funding_info = funding_info_report[connector_name]
@@ -365,7 +389,7 @@ class FundingRateArbitrage(StrategyV2Base):
         for token in self.config.token_symbols:
             if token not in self.active_funding_arbitrages:
                 funding_info_report = self.get_funding_info_by_token(token)
-                best_combination = self.get_most_profitable_combination(token, funding_info_report)
+                best_combination = self.get_directionally_allowed_combination(token, funding_info_report)
                 if best_combination is None:
                     continue
 
@@ -498,6 +522,8 @@ class FundingRateArbitrage(StrategyV2Base):
     def format_status(self) -> str:
         original_status = super().format_status()
         funding_rate_status = []
+
+        funding_rate_status.extend(self._token_direction_lines())
 
         if self.ready_to_trade:
             all_funding_info = []
