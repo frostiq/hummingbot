@@ -498,6 +498,9 @@ class FundingRateArbitrage(StrategyV2Base):
     def format_status(self) -> str:
         original_status = super().format_status()
         funding_rate_status = []
+
+        funding_rate_status.append("Token Symbols: " + ", ".join(sorted(self.config.token_symbols)))
+
         if self.ready_to_trade:
             all_funding_info = []
             all_best_paths = []
