@@ -499,8 +499,6 @@ class FundingRateArbitrage(StrategyV2Base):
         original_status = super().format_status()
         funding_rate_status = []
 
-        funding_rate_status.append("\nToken Symbols: " + ", ".join(sorted(self.config.token_symbols)))
-
         if self.ready_to_trade:
             all_funding_info = []
             all_best_paths = []
@@ -565,8 +563,9 @@ class FundingRateArbitrage(StrategyV2Base):
             funding_rate_status.append(f"Profitability to Take Profit: {self.config.profitability_to_take_profit:.2%}\n")
             funding_rate_status.append("Funding Rate Info (Funding Profitability in Days): ")
             table_format = cast(ClientConfigEnum, "psql")
-
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_funding_info), table_format=table_format,))
+
+            funding_rate_status.append("\nBest Funding Rate Arbitrage Paths: ")
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_best_paths), table_format=table_format,))
             stale_combinations = [
                 f"{token}@{connector}"
@@ -577,6 +576,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 funding_rate_status.append(
                     "WARNING: Funding rate never updated after initialization for: " + ", ".join(sorted(stale_combinations))
                 )
+
             if self.active_funding_arbitrages:
                 active_rows = []
                 for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
@@ -606,11 +606,13 @@ class FundingRateArbitrage(StrategyV2Base):
                             "executors": ", ".join(funding_arbitrage_info.executors_ids),
                         }
                     )
-                funding_rate_status.append("Active Funding Arbitrages:")
+                funding_rate_status.append("\nActive Funding Arbitrages:")
                 funding_rate_status.append(
                     format_df_for_printout(
                         df=pd.DataFrame(active_rows),
                         table_format=table_format,
                     )
                 )
+            else:
+                funding_rate_status.append("\nNo active funding arbitrages.")
         return original_status + "\n".join(funding_rate_status)
