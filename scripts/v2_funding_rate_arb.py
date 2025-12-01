@@ -53,7 +53,7 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
         json_schema_extra={
             "prompt": lambda mi: (
                 "Enter token directions as token->connector->direction mappings (e.g."
-                " WIF.hyperliquid_perpetual=long,WIF.binance_perpetual=short)"
+                " WIF.hyperliquid_perpetual=buy,WIF.binance_perpetual=sell)"
             ),
             "prompt_on_new": True,
         },
@@ -115,9 +115,9 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             return direction
         if isinstance(direction, str):
             direction_value = direction.strip().lower()
-            if direction_value in {"long", "buy"}:
+            if direction_value == "buy":
                 return TradeType.BUY
-            if direction_value in {"short", "sell"}:
+            if direction_value == "sell":
                 return TradeType.SELL
         raise ValueError(f"Unsupported direction value: {direction}")
 
@@ -505,8 +505,6 @@ class FundingRateArbitrage(StrategyV2Base):
             all_funding_info = []
             all_best_paths = []
             for token in self.config.token_symbols:
-                funding_rate_status.append("\nToken Symbol: " + token)
-
                 best_paths_info = {"token": token}
                 funding_info_report = self.get_funding_info_by_token(token)
                 if not funding_info_report:
@@ -567,11 +565,6 @@ class FundingRateArbitrage(StrategyV2Base):
             funding_rate_status.append(f"Profitability to Take Profit: {self.config.profitability_to_take_profit:.2%}\n")
             funding_rate_status.append("Funding Rate Info (Funding Profitability in Days): ")
             table_format = cast(ClientConfigEnum, "psql")
-
-            funding_rate_status.append("Best Paths Info:")
-            funding_rate_status.append(str(all_best_paths))
-            funding_rate_status.append("Funding Info:")
-            funding_rate_status.append(str(all_funding_info))
 
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_funding_info), table_format=table_format,))
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_best_paths), table_format=table_format,))
