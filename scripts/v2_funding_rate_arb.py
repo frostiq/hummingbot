@@ -499,7 +499,7 @@ class FundingRateArbitrage(StrategyV2Base):
         original_status = super().format_status()
         funding_rate_status = []
 
-        funding_rate_status.append("Token Symbols: " + ", ".join(sorted(self.config.token_symbols)))
+        funding_rate_status.append("\nToken Symbols: " + ", ".join(sorted(self.config.token_symbols)))
 
         if self.ready_to_trade:
             all_funding_info = []
@@ -565,6 +565,10 @@ class FundingRateArbitrage(StrategyV2Base):
             funding_rate_status.append(f"Profitability to Take Profit: {self.config.profitability_to_take_profit:.2%}\n")
             funding_rate_status.append("Funding Rate Info (Funding Profitability in Days): ")
             table_format = cast(ClientConfigEnum, "psql")
+
+            funding_rate_status.append(all_best_paths)
+            funding_rate_status.append(all_funding_info)
+
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_funding_info), table_format=table_format,))
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_best_paths), table_format=table_format,))
             stale_combinations = [
