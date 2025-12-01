@@ -566,8 +566,10 @@ class FundingRateArbitrage(StrategyV2Base):
             funding_rate_status.append("Funding Rate Info (Funding Profitability in Days): ")
             table_format = cast(ClientConfigEnum, "psql")
 
-            funding_rate_status.append(all_best_paths)
-            funding_rate_status.append(all_funding_info)
+            funding_rate_status.append("Best Paths Info:")
+            funding_rate_status.append(str(all_best_paths))
+            funding_rate_status.append("Funding Info:")
+            funding_rate_status.append(str(all_funding_info))
 
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_funding_info), table_format=table_format,))
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_best_paths), table_format=table_format,))
