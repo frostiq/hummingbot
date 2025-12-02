@@ -144,6 +144,7 @@ class FundingArbitrageState:
     executors_ids: List[str]
     side: TradeType
     funding_payments: List[FundingPaymentCompletedEvent] = field(default_factory=list)
+    stop_condition_start: Optional[float] = None
 
 
 class FundingRateArbitrage(StrategyV2Base):
@@ -171,7 +172,7 @@ class FundingRateArbitrage(StrategyV2Base):
         self.active_funding_arbitrages: Dict[str, FundingArbitrageState] = {}
         self._initial_funding_rates: Dict[Tuple[str, str], Decimal] = {}
         self._funding_rate_updates: Dict[Tuple[str, str], bool] = {}
-        self._funding_stop_condition_start: Dict[str, float] = {}
+        self._stop_condition_duration = 60 * 60
 
     def start(self, clock: Clock, timestamp: float) -> None:
         """
@@ -442,7 +443,9 @@ class FundingRateArbitrage(StrategyV2Base):
                 ) - self.get_normalized_funding_rate_in_seconds(token, funding_info_report, funding_arbitrage_info.connector_2)
             below_threshold = funding_rate_diff * self.seconds_per_day < self.config.funding_rate_diff_stop_loss
             if below_threshold:
-                condition_start = self._funding_stop_condition_start.setdefault(token, self.current_timestamp)
+                if funding_arbitrage_info.stop_condition_start is None:
+                    funding_arbitrage_info.stop_condition_start = self.current_timestamp
+                condition_start = funding_arbitrage_info.stop_condition_start
                 condition_duration = self.current_timestamp - condition_start
                 if (condition_duration == 0):
                     self.logger().info(
@@ -451,10 +454,9 @@ class FundingRateArbitrage(StrategyV2Base):
                     )
             else:
                 condition_duration = 0
-                if token in self._funding_stop_condition_start:
-                    self._funding_stop_condition_start.pop(token, None)
+                funding_arbitrage_info.stop_condition_start = None
 
-            if below_threshold and condition_duration >= 30 * 60:
+            if below_threshold and condition_duration >= self._stop_condition_duration:
                 self.logger().info(
                     f"Funding rate stop loss met for {token}: executors={funding_arbitrage_info.executors_ids} "
                     f"funding_rate_diff={funding_rate_diff:.5f} for {condition_duration}s"
@@ -464,7 +466,6 @@ class FundingRateArbitrage(StrategyV2Base):
                 tokens_to_remove.append(token)
         for token in tokens_to_remove:
             self.active_funding_arbitrages.pop(token, None)
-            self._funding_stop_condition_start.pop(token, None)
         return stop_executor_actions
 
     def did_complete_funding_payment(self, funding_payment_completed_event: FundingPaymentCompletedEvent):
@@ -620,12 +621,19 @@ class FundingRateArbitrage(StrategyV2Base):
                     path_display = (
                         f"{connector_1_label} {connector_1_arrow} | {connector_2_label} {connector_2_arrow}"
                     )
+                    if funding_arbitrage_info.stop_condition_start is not None:
+                        elapsed = self.current_timestamp - funding_arbitrage_info.stop_condition_start
+                        remaining = max(0, self._stop_condition_duration - elapsed)
+                        stop_eta = self._format_time_to_funding(remaining)
+                    else:
+                        stop_eta = "N/A"
                     active_rows.append(
                         {
                             "token": token,
                             "path": path_display,
                             "long funding": long_funding,
                             "short funding": short_funding,
+                            "stop loss ETA": stop_eta,
                         }
                     )
                 funding_rate_status.append("\nActive Funding Arbitrages:")
