@@ -358,23 +358,12 @@ class FundingRateArbitrage(StrategyV2Base):
         return f"{minutes:02d}:{secs:02d}"
 
     @classmethod
-    def _format_funding_payments(cls, payments: List[FundingPaymentCompletedEvent]) -> str:
-        if not payments:
-            return "None"
-        total_amount = sum((payment.amount for payment in payments), Decimal("0"))
-        entries = []
-        for payment in payments:
-            entries.append(
-                f"{payment.amount:.5f} USDT @ rate={payment.funding_rate:.4%} exchange={payment.market}"
-            )
-        return f"Total={total_amount:.5f} | " + " | ".join(entries)
-
-    @classmethod
     def _format_funding_payments_for_connector(
         cls, payments: List[FundingPaymentCompletedEvent], connector_name: str
     ) -> str:
         connector_payments = [payment for payment in payments if payment.market == connector_name]
-        return cls._format_funding_payments(connector_payments)
+        total_amount = sum((payment.amount for payment in connector_payments), Decimal("0"))
+        return f"{total_amount:.5f} USDT"
 
     def create_actions_proposal(self) -> List[CreateExecutorAction]:
         """
@@ -523,8 +512,6 @@ class FundingRateArbitrage(StrategyV2Base):
         original_status = super().format_status()
         funding_rate_status = []
 
-        funding_rate_status.extend(self._token_direction_lines())
-
         if self.ready_to_trade:
             all_funding_info = []
             all_best_paths = []
@@ -585,9 +572,11 @@ class FundingRateArbitrage(StrategyV2Base):
 
                 all_funding_info.append(token_info)
                 all_best_paths.append(best_paths_info)
+
             funding_rate_status.append(f"\n\n\nMin Funding Rate Profitability: {self.config.min_funding_rate_profitability:.2%}")
             funding_rate_status.append(f"Profitability to Take Profit: {self.config.profitability_to_take_profit:.2%}\n")
-            funding_rate_status.append("Funding Rate Info (Funding Profitability in Days): ")
+            funding_rate_status.extend(self._token_direction_lines())
+            funding_rate_status.append("\nFunding Rate Info (Funding Profitability in Days): ")
             table_format = cast(ClientConfigEnum, "psql")
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_funding_info), table_format=table_format,))
 
@@ -622,14 +611,21 @@ class FundingRateArbitrage(StrategyV2Base):
                     short_funding = self._format_funding_payments_for_connector(
                         funding_arbitrage_info.funding_payments, short_connector
                     )
+                    connector_1_label = funding_arbitrage_info.connector_1.replace("_perpetual", "")
+                    connector_2_label = funding_arbitrage_info.connector_2.replace("_perpetual", "")
+                    if funding_arbitrage_info.side == TradeType.BUY:
+                        connector_1_arrow, connector_2_arrow = "↑", "↓"
+                    else:
+                        connector_1_arrow, connector_2_arrow = "↓", "↑"
+                    path_display = (
+                        f"{connector_1_label} {connector_1_arrow} | {connector_2_label} {connector_2_arrow}"
+                    )
                     active_rows.append(
                         {
                             "token": token,
-                            "long": long_connector,
+                            "path": path_display,
                             "long funding": long_funding,
-                            "short": short_connector,
                             "short funding": short_funding,
-                            "executors": ", ".join(funding_arbitrage_info.executors_ids),
                         }
                     )
                 funding_rate_status.append("\nActive Funding Arbitrages:")
