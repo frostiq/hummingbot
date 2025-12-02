@@ -173,6 +173,15 @@ class FundingRateArbitrage(StrategyV2Base):
         self._initial_funding_rates: Dict[Tuple[str, str], Decimal] = {}
         self._funding_rate_updates: Dict[Tuple[str, str], bool] = {}
         self._stop_condition_duration = 60 * 60
+        self._blocked_paths: Set[Tuple[str, str, str]] = set()
+
+    @staticmethod
+    def _path_key(token: str, connector_a: str, connector_b: str) -> Tuple[str, str, str]:
+        first, second = sorted([connector_a, connector_b])
+        return token, first, second
+
+    def _is_path_blocked(self, token: str, connector_a: str, connector_b: str) -> bool:
+        return self._path_key(token, connector_a, connector_b) in self._blocked_paths
 
     def start(self, clock: Clock, timestamp: float) -> None:
         """
@@ -311,12 +320,20 @@ class FundingRateArbitrage(StrategyV2Base):
             estimated_trade_pnl_pct = (connector_1_price - connector_2_price) / connector_2_price
         return estimated_trade_pnl_pct - estimated_fees_connector_1 - estimated_fees_connector_2
 
-    def _find_best_combination(self, token: str, funding_info_report: Dict, enforce_direction: bool):
+    def _find_best_combination(
+        self,
+        token: str,
+        funding_info_report: Dict,
+        enforce_direction: bool,
+        blocked_paths: Optional[Set[Tuple[str, str, str]]] = None,
+    ):
         best_combination = None
         highest_profitability = Decimal("0")
         for connector_1 in funding_info_report:
             for connector_2 in funding_info_report:
                 if connector_1 != connector_2:
+                    if blocked_paths is not None and self._path_key(token, connector_1, connector_2) in blocked_paths:
+                        continue
                     rate_connector_1 = self.get_normalized_funding_rate_in_seconds(token, funding_info_report, connector_1)
                     rate_connector_2 = self.get_normalized_funding_rate_in_seconds(token, funding_info_report, connector_2)
                     funding_rate_diff = abs(rate_connector_1 - rate_connector_2) * self.seconds_per_day
@@ -338,7 +355,12 @@ class FundingRateArbitrage(StrategyV2Base):
 
     def get_directionally_allowed_combination(self, token: str, funding_info_report: Dict):
         """Return the best funding combination that complies with configured directions."""
-        return self._find_best_combination(token, funding_info_report, enforce_direction=True)
+        return self._find_best_combination(
+            token,
+            funding_info_report,
+            enforce_direction=True,
+            blocked_paths=self._blocked_paths,
+        )
 
     def get_normalized_funding_rate_in_seconds(self, token: str, funding_info_report, connector_name):
         funding_info = funding_info_report[connector_name]
@@ -464,6 +486,12 @@ class FundingRateArbitrage(StrategyV2Base):
                 )
                 stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
                 tokens_to_remove.append(token)
+                path_key = self._path_key(token, funding_arbitrage_info.connector_1, funding_arbitrage_info.connector_2)
+                if path_key not in self._blocked_paths:
+                    self._blocked_paths.add(path_key)
+                    self.logger().info(
+                        f"Blocking further entries for {token} between {path_key[1]} and {path_key[2]} until strategy restart."
+                    )
         for token in tokens_to_remove:
             self.active_funding_arbitrages.pop(token, None)
         return stop_executor_actions
@@ -591,6 +619,19 @@ class FundingRateArbitrage(StrategyV2Base):
             if stale_combinations:
                 funding_rate_status.append(
                     "WARNING: Funding rate never updated after initialization for: " + ", ".join(sorted(stale_combinations))
+                )
+
+            if self._blocked_paths:
+                blocked_rows = [
+                    {"token": token, "connector 1": conn_a, "connector 2": conn_b}
+                    for (token, conn_a, conn_b) in sorted(self._blocked_paths)
+                ]
+                funding_rate_status.append("\nBlocked Arbitrage Paths (stop-loss met):")
+                funding_rate_status.append(
+                    format_df_for_printout(
+                        df=pd.DataFrame(blocked_rows),
+                        table_format=table_format,
+                    )
                 )
 
             if self.active_funding_arbitrages:
