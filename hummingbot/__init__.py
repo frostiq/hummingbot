@@ -136,6 +136,7 @@ def init_logging(conf_filename: str,
     from typing import Dict
 
     import pandas as pd
+    import watchtower
     from ruamel.yaml import YAML
 
     from hummingbot.logger.struct_logger import StructLogger, StructLogRecord
@@ -162,6 +163,15 @@ def init_logging(conf_filename: str,
                 if logger in client_config_map.logger_override_whitelist:
                     config_dict["loggers"][logger]["level"] = override_log_level
         logging.config.dictConfig(config_dict)
+
+    # Attach CloudWatch handler (uses VM instance-profile credentials automatically)
+    cloudwatch_handler = watchtower.CloudWatchLogHandler(
+        log_group_name="hummingbot-logs",
+        log_stream_name=strategy_file_path.replace(".yml", ""),
+        create_log_group=True,
+    )
+    cloudwatch_handler.setLevel(logging.INFO)
+    logging.getLogger().addHandler(cloudwatch_handler)
 
 
 def get_strategy_list() -> List[str]:
