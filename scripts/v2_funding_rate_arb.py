@@ -597,8 +597,23 @@ class FundingRateArbitrage(StrategyV2Base):
 
                 time_to_next_funding_info_c1 = funding_info_report[connector_1].next_funding_utc_timestamp - self.current_timestamp
                 time_to_next_funding_info_c2 = funding_info_report[connector_2].next_funding_utc_timestamp - self.current_timestamp
-                best_paths_info["Time to Funding 1"] = self._format_time_to_funding(time_to_next_funding_info_c1)
-                best_paths_info["Time to Funding 2"] = self._format_time_to_funding(time_to_next_funding_info_c2)
+                rate_c1 = funding_info_report[connector_1].rate
+                rate_c2 = funding_info_report[connector_2].rate
+                # Long pays positive funding, short receives positive funding
+                if side == TradeType.BUY:
+                    # connector_1 is long, connector_2 is short
+                    expected_payout_c1 = -self.config.position_size_quote * rate_c1
+                    expected_payout_c2 = self.config.position_size_quote * rate_c2
+                else:
+                    # connector_1 is short, connector_2 is long
+                    expected_payout_c1 = self.config.position_size_quote * rate_c1
+                    expected_payout_c2 = -self.config.position_size_quote * rate_c2
+                best_paths_info["Time to Funding 1"] = (
+                    f"{self._format_time_to_funding(time_to_next_funding_info_c1)} ({expected_payout_c1:+.4f})"
+                )
+                best_paths_info["Time to Funding 2"] = (
+                    f"{self._format_time_to_funding(time_to_next_funding_info_c2)} ({expected_payout_c2:+.4f})"
+                )
 
                 all_funding_info.append(token_info)
                 all_best_paths.append(best_paths_info)
