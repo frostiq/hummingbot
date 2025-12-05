@@ -463,7 +463,8 @@ class FundingRateArbitrage(StrategyV2Base):
                 funding_rate_diff = self.get_normalized_funding_rate_in_seconds(
                     token, funding_info_report, funding_arbitrage_info.connector_1
                 ) - self.get_normalized_funding_rate_in_seconds(token, funding_info_report, funding_arbitrage_info.connector_2)
-            below_threshold = funding_rate_diff * self.seconds_per_day < self.config.funding_rate_diff_stop_loss
+            funding_rate_diff *= self.seconds_per_day
+            below_threshold = funding_rate_diff < self.config.funding_rate_diff_stop_loss
             if below_threshold:
                 if funding_arbitrage_info.stop_condition_start is None:
                     funding_arbitrage_info.stop_condition_start = self.current_timestamp
@@ -471,7 +472,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 condition_duration = self.current_timestamp - condition_start
                 if (condition_duration == 0):
                     self.logger().info(
-                        f"Funding rate stop loss condition for {token} started: duration={condition_duration:.2f}s "
+                        f"Funding rate stop loss condition for {token} started: "
                         f"funding_rate_diff={funding_rate_diff:.5f}"
                     )
             else:
