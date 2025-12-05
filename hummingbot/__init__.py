@@ -135,6 +135,7 @@ def init_logging(conf_filename: str,
     from os.path import join
     from typing import Dict
 
+    import boto3
     import pandas as pd
     import watchtower
     from ruamel.yaml import YAML
@@ -169,6 +170,7 @@ def init_logging(conf_filename: str,
         log_group_name="hummingbot-logs",
         log_stream_name=strategy_file_path.replace(".yml", ""),
         create_log_group=True,
+        boto3_client=boto3.client("logs", region_name="ap-northeast-1"),
     )
     cloudwatch_handler.setLevel(logging.INFO)
     logging.getLogger().addHandler(cloudwatch_handler)
