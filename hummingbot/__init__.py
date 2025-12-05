@@ -173,7 +173,13 @@ def init_logging(conf_filename: str,
         boto3_client=boto3.client("logs", region_name="ap-northeast-1"),
     )
     cloudwatch_handler.setLevel(logging.INFO)
-    cloudwatch_handler.setFormatter(logging.Formatter("%(levelname)s - %(name)s - %(message)s"))
+
+    class ShortNameFormatter(logging.Formatter):
+        def format(self, record):
+            record.shortname = record.name.rsplit(".", 1)[-1]
+            return super().format(record)
+
+    cloudwatch_handler.setFormatter(ShortNameFormatter("%(levelname)s - %(shortname)s - %(message)s"))
 
     # Add to root logger
     logging.getLogger().addHandler(cloudwatch_handler)
