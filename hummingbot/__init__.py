@@ -173,7 +173,14 @@ def init_logging(conf_filename: str,
         boto3_client=boto3.client("logs", region_name="ap-northeast-1"),
     )
     cloudwatch_handler.setLevel(logging.INFO)
+    cloudwatch_handler.setFormatter(logging.Formatter("%(levelname)s - %(name)s - %(message)s"))
+
+    # Add to root logger
     logging.getLogger().addHandler(cloudwatch_handler)
+
+    # Add to all configured loggers (they have propagate=false, so won't reach root)
+    for logger_name in config_dict.get("loggers", {}):
+        logging.getLogger(logger_name).addHandler(cloudwatch_handler)
 
 
 def get_strategy_list() -> List[str]:
